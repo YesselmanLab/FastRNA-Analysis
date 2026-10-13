@@ -1,0 +1,329 @@
+name: reproducibility
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly. The data archive lives outside the repo, so it can rot (link
+    # removed, quota, a re-upload that drops a file) with nothing here changing.
+    - cron: "0 6 * * 1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Proves a fresh clone installs and the code is intact: dependencies resolve,,
+  # every notebook is valid, and every script imports without error. This is the
+  # "does the repo work on someone else's machine" baseline (no data needed).
+  # Runs on Linux and macOS so both a reviewer's Mac and a Linux box are covered.
+  code-integrity:
+    name: install + notebooks valid + scripts import (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install requirements
+        run: pip install -r requirements.txt
+      - name: Notebooks are valid
+        run: |
+          python - <<'PY'
+          import glob, sys, nbformat
+          bad = 0
+          for nb in sorted(glob.glob("notebooks/**/*.ipynb", recursive=True)):
+              try:
+                  nbformat.read(nb, as_version=4); print("ok  ", nb)
+              except Exception as e:
+                  print("FAIL", nb, e); bad = 1
+          sys.exit(bad)
+          PY
+      - name: Scripts import without error
+        run: |
+          python - <<'PY'
+          import glob, subprocess, sys
+          # Each script is imported in a fresh interpreter with its own folder first
+          # on sys.path, exactly as `python path/to/script.py` would see it. One
+          # shared process breaks sibling imports and lets scripts/data_gen/_vendor
+          # shadow scripts/validation/_vendor.
+          CHECK = (
+              "import importlib.util, pathlib, sys\n"
+              "f = pathlib.Path(sys.argv[1]).resolve()\n"
+              "sys.path[:0] = [str(f.parent)]\n"
+              "sys.path.append('scripts/data_gen')\n"
+              "spec = importlib.util.spec_from_file_location('mod_' + f.stem, f)\n"
+              "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+          )
+          bad = 0
+          for f in sorted(glob.glob("scripts/**/*.py", recursive=True)):
+              # _vendor/* are package internals (relative imports); they are
+              # exercised transitively by the build_* scripts, not standalone.
+              if "/_vendor/" in f.replace("\\", "/"):
+                  continue
+              # reference/* drive the PARSE engine repos, which are expected as
+              # siblings of this checkout and are not present on the runner.
+              # Syntax is still checked below.
+              if "/reference/" in f.replace("\\", "/"):
+                  continue
+              r = subprocess.run([sys.executable, "-c", CHECK, f],
+                                 capture_output=True, text=True)
+              if r.returncode == 0:
+                  print("ok  ", f)
+              else:
+                  err = r.stderr.strip().splitlines()
+                  print("FAIL", f, err[-1] if err else f"exit {r.returncode}"); bad = 1
+          sys.exit(bad)
+          PY
+      - name: Engine-driven scripts compile
+        run: |
+          python - <<'PY'
+          import glob, py_compile, sys
+          bad = 0
+          for f in sorted(glob.glob("scripts/reference/*.py")):
+              try:
+                  py_compile.compile(f, doraise=True); print("ok  ", f)
+              except Exception as e:
+                  print("FAIL", f, type(e).__name__, e); bad = 1
+          sys.exit(bad)
+          PY
+
+  # Detects whether this push/PR actually touches the fetch path. The data
+  # download is ~400 MB per leg, so we only run it when it could have broken.
+  changes:
+    name: detect fetch-related changes
+    runs-on: ubuntu-latest
+    outputs:
+      fetch: ${{ steps.filter.outputs.fetch }}
+      notebooks: ${{ steps.filter.outputs.notebooks }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        # No diff base on schedule/dispatch: the step is skipped, the outputs
+        # come back empty, and the jobs below fall through to their own
+        # event checks.
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        with:
+          filters: |
+            fetch:
+              - 'scripts/fetch_data.sh'
+              - '.github/workflows/reproducibility.yml'
+            notebooks:
+              - 'notebooks/**'
+              - 'requirements.txt'
+              - 'scripts/fetch_data.sh'
+              - '.github/workflows/reproducibility.yml'
+
+  # Proves a fresh clone can fetch the archived data with one command: run
+  # fetch_data.sh (downloads data.zip from the public Google Drive archive and
+  # unzips it) and assert the expected data/ tree lands where notebooks read it.
+  # Full matrix: both download paths (curl fallback + gdown branch) on both OSes,
+  # so every combination a real user could hit is verified. Runs only when the
+  # fetch script or this workflow changed (see `changes`), or on manual dispatch.
+  data-fetch:
+    name: fetch_data.sh (${{ matrix.os }}, ${{ matrix.downloader }})
+    needs: changes
+    if: needs.changes.outputs.fetch == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        downloader: [curl, gdown]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install gdown (gdown leg only)
+        if: matrix.downloader == 'gdown'
+        run: pip install gdown
+      - name: Fetch the data archive
+        run: bash scripts/fetch_data.sh
+      - name: Assert data/ landed in the right place
+        run: |
+          python - <<'PY'
+          import pathlib, sys
+          expect = [
+              "data/reference/scoring_tables",
+              "data/comparison",
+              "data/validation",
+          ]
+          bad = 0
+          for d in expect:
+              p = pathlib.Path(d)
+              ok = p.is_dir() and any(p.iterdir())
+              print(("ok  " if ok else "FAIL"), d)
+              bad |= not ok
+          # the zip must be cleaned up, and data/ must not be empty
+          if pathlib.Path("data.zip").exists():
+              print("FAIL data.zip was not removed"); bad = 1
+          sys.exit(bad)
+          PY
+
+  # Proves anyone can regenerate the feature tables from scratch: build the public
+  # PARSE engine, then extract features for 2 structures (the engine downloads
+  # their mmCIFs from RCSB). Uses a tiny fixture set, so no private data is needed.
+  # Runs on Linux and macOS so the C++ build is verified on both toolchains.
+  engine-reproducibility:
+    name: build engine + regenerate features (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install requirements (+ recent CMake)
+        run: pip install -r requirements.txt cmake
+      - name: Build the PARSE engine
+        run: |
+          git clone --depth 1 https://github.com/KamshinenD/PARSE-RNA
+          cmake -S PARSE-RNA -B PARSE-RNA/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build PARSE-RNA/build -j"$(getconf _NPROCESSORS_ONLN)"
+          echo "PARSE_ENGINE=$GITHUB_WORKSPACE/PARSE-RNA/build/parse" >> "$GITHUB_ENV"
+      - name: Extract features for the 2 fixture structures
+        run: |
+          cd scripts/data_gen
+          python extract_pair_features.py \
+            --reference-set ../../.github/fixtures/mini_reference_set.json \
+            --output-dir "$RUNNER_TEMP/feat" --workers 2
+          python extract_backbone_torsions.py \
+            --reference-set ../../.github/fixtures/mini_reference_set.json \
+            --output "$RUNNER_TEMP/feat/torsions_all.csv" --workers 2
+      - name: Assert the tables were produced
+        run: |
+          python - <<'PY'
+          import os, pathlib, sys, pandas as pd
+          feat = pathlib.Path(os.environ["RUNNER_TEMP"]) / "feat"
+          ok = True
+          for f in ["pairs.csv", "hbonds.csv", "torsions.csv", "torsions_all.csv"]:
+              p = feat / f
+              n = len(pd.read_csv(p)) if p.exists() else 0
+              print(("ok  " if n > 0 else "FAIL"), f, n, "rows")
+              ok = ok and n > 0
+          sys.exit(0 if ok else 1)
+          PY
+
+  # Proves the published archive actually drives the analysis: fetch data.zip
+  # exactly as a reader would, then execute every notebook against it. The
+  # code-integrity job only parses notebooks; this one runs them, so it is what
+  # catches a stale archive - a notebook reading a file or column that the
+  # uploaded zip does not have. Gated like data-fetch because the download is
+  # ~400 MB and Google Drive enforces a daily quota; the weekly schedule keeps
+  # it honest when nothing is being pushed.
+  notebooks-run:
+    name: fetch data + execute every notebook
+    needs: changes
+    if: >-
+      needs.changes.outputs.notebooks == 'true' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install requirements
+        run: pip install -r requirements.txt
+      - name: Fetch the data archive
+        run: bash scripts/fetch_data.sh
+      - name: Archive contains what the notebooks read
+        # Fail here, naming the missing files, rather than 300 lines into a
+        # notebook traceback. A missing file means the published archive is
+        # older than the notebooks: re-upload data.zip.
+        run: |
+          python - <<'PY'
+          import pathlib, sys
+          # Every data/ input the notebooks read (outputs under figures/ excluded).
+          needed = ["data/" + f for f in [
+              "benchmark/dssr_PARSE_time_benchmark.csv",
+              "benchmark/runtime_direct_all/per_structure.csv",
+              "benchmark/runtime_direct_all/speedups.csv",
+              "comparison/barnaba_pairs.json",
+              "comparison/bpnet_pairs.json",
+              "comparison/cWW.json",
+              "comparison/dssr_pairs.json",
+              "comparison/fr3d",
+              "comparison/parse_candidates.json",
+              "comparison/parse_pairs.json",
+              "comparison/residue_names.json",
+              "comparison/rnapolis_pairs.json",
+              "comparison/rnaview_pairs.json",
+              "pymol/renders/1C_ideal_GC.png",
+              "pymol/renders/6A.png",
+              "reference/high_quality_features/hbonds.csv",
+              "reference/high_quality_features/torsions.csv",
+              "reference/metadata/metadata_cache.json",
+              "reference/quality_axes/bang_vs_quality.csv",
+              "reference/reference_sets/reference_set.json",
+              "reference/reference_sets/reference_set_poor.json",
+              "reference/resolved_again/issue_rates_per_unit.csv",
+              "reference/resolved_again/redo_per_structure_points.csv",
+              "reference/resolved_again/resolve_pairs_matched.csv",
+              "reference/resolved_again/resolve_per_molecule_points.csv",
+              "reference/scores/pair_scores_uniques_parse.jsonl",
+              "reference/scores/scores_all_uniques.json",
+              "reference/scoring_tables/penalty_weights.json",
+              "reference/scoring_tables/prosco_distributions.json",
+              "reference/scoring_tables/z_tables.json",
+              "validation/annotator_consensus.json",
+              "validation/annotator_consensus_shared.json",
+              "validation/pdb_redo_pairs_comparison.json",
+              "validation/rejection_referee_support.json",
+              "validation/time_reversal_controls.json",
+              "validation/time_reversal_resolved.json",
+          ]]
+          missing = [f for f in needed if not pathlib.Path(f).exists()]
+          for f in needed:
+              print(("ok    " if f not in missing else "MISSING"), f)
+          if missing:
+              print("\nThe published data.zip is out of date. Re-upload it from "
+                    "the repo root (Drive > Manage versions > Upload new version, "
+                    "so the file id stays the same).")
+          sys.exit(1 if missing else 0)
+          PY
+      - name: Execute every notebook
+        run: |
+          python - <<'PY'
+          import glob, pathlib, subprocess, sys, tempfile, time
+
+          out = tempfile.mkdtemp()
+          notebooks = sorted(glob.glob("notebooks/**/*.ipynb", recursive=True))
+          if not notebooks:
+              print("no notebooks found"); sys.exit(1)
+
+          failed = []
+          for nb in notebooks:
+              t0 = time.time()
+              # Executed out of place: CI must not rewrite the committed
+              # outputs, only prove they can be regenerated.
+              r = subprocess.run(
+                  ["jupyter", "nbconvert", "--to", "notebook", "--execute", nb,
+                   "--output-dir", out, "--ExecutePreprocessor.timeout=900"],
+                  capture_output=True, text=True)
+              dt = time.time() - t0
+              if r.returncode == 0:
+                  print(f"ok    {nb}  ({dt:.0f}s)", flush=True)
+              else:
+                  failed.append(nb)
+                  print(f"FAIL  {nb}  ({dt:.0f}s)", flush=True)
+                  print(r.stderr[-3000:], flush=True)
+
+          print(f"\n{len(notebooks) - len(failed)}/{len(notebooks)} notebooks ran")
+          sys.exit(1 if failed else 0)
+          PY

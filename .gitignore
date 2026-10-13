@@ -1,0 +1,33 @@
+__pycache__/
+.runtime-tools/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+
+# All data is fetched from the archive (see README) - not tracked in git.
+# Note this ignores the CONTENTS of data/ rather than data/ itself: git will
+# not descend into an excluded directory, so `data/` plus a negation cannot
+# re-include anything. Excluding `data/*` leaves the negations below workable.
+data/*
+
+# Notebook plots that are not manuscript figures: the executed notebooks embed
+# their own output, so there is nothing to keep here.
+figures/exploratory/
+figures/pse/
+
+# PyMOL writes fetched structures into the working directory.
+*.cif
+*.zip
+# Working copy of the S7 analysis; the figure notebook is
+# notebooks/supplemental_figures/figS7.ipynb.
+notebooks/backbone_and_pucker.ipynb
+notebooks/suite_outliers.ipynb
+
+# PyMOL render script: rebuilds data/pymol/renders/ from data/pymol/sessions/. Kept
+# out of git; the notebooks read only the rendered images in data/.
+scripts/pymol_figures/
+notebooks/consolidated_backbone_puckers.ipynb
+notebooks/predictive_value_and_robustness.ipynb
+
+# Notebook result caches (rebuilt automatically when data/ changes).
+.cache/
