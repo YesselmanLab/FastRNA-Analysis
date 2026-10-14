@@ -206,7 +206,7 @@ the copy used in the paper; the runtime benchmark records each file's checksum.
 | subdir | contents |
 |---|---|
 | `sessions/` | every PyMOL session (`.pse`) behind the structure panels, each saved in its final camera view; `README.txt` maps sessions to panels |
-| `renders/` | the ray-traced images the figure notebooks read (Figures 3, 5 and 6, Supplementary Figure S2), plus `7D_labels.json`, the label anchors for Figure 6D |
+| `renders/` | the ray-traced images the figure notebooks read (Figures 3 and 5, Supplementary Figures S2, S3 and S10), plus `7D_labels.json`, the label anchors for Figure S10D |
 
 The notebooks read only `renders/`, never the sessions. The images are rendered
 from the sessions by a local script that is not part of the repository.

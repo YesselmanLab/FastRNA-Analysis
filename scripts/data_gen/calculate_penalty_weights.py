@@ -1,22 +1,4 @@
-"""Derive per-parameter penalty weights using Shannon (log-odds) approach.
-
-For each of the 9 parameters individually:
-  - Compute mean Cerny severity in GOOD set vs POOR set
-  - weight_i = log(s_poor_i / s_good_i)  [clipped to >= 0]
-  - Renormalize to sum = 100
-
-This is the pure information-theoretic approach. Per-parameter weights are
-derived independently, then renormalized to sum to 100 for the penalty
-calculation.
-
-Output: data/reference/scoring_tables/penalty_weights.json
-
-This script must stay in sync with src/pair_finder/scoring/issues.py. The
-severity calculation here mirrors the Cerny function used at runtime.
-
-Reference: Cerny et al. NAR 2026 (gkaf1335). Severity = 0 if ProSco >= 5
-(Preferred), else min(1, |Z'|/5).
-"""
+"""Derive per-parameter penalty weights using Shannon (log-odds) approach."""
 
 import argparse
 import datetime
@@ -25,10 +7,6 @@ import math
 from pathlib import Path
 
 import pandas as pd
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_FEATURES_DIR = REPO_ROOT / "data" / "reference" / "high_quality_features"
@@ -42,16 +20,11 @@ from _vendor.canonical import canonicalize_bp, maybe_flip  # noqa: E402
 from _vendor.hbond_distance_policy import distances_to_score  # noqa: E402
 from _vendor.helpers import REPORT_GROUPS  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Parameters and groupings
-# ---------------------------------------------------------------------------
-
 PAIR_PARAMS = ["shear", "stretch", "stagger", "buckle", "propeller", "opening"]
-HB_PARAMS = ["distance", "hbond_angles"]  # Combined donor + acceptor angles
-ALL_PARAMS = PAIR_PARAMS + HB_PARAMS  # 8 continuous parameters
-FEATURES = ALL_PARAMS + ["incorrect_hbond_count", "clash"]  # 10 total
+HB_PARAMS = ["distance", "hbond_angles"]
+ALL_PARAMS = PAIR_PARAMS + HB_PARAMS
+FEATURES = ALL_PARAMS + ["incorrect_hbond_count", "clash"]
 
-# Clash severity. Must match scoring/clashes.py in the engine.
 CLASH_THRESHOLD = 0.4
 SEVERITY_CAP = 0.9
 
@@ -59,14 +32,7 @@ SELF_RECIP = {"cWW", "tWW", "cHH", "tHH", "cSS", "tSS"}
 SIGN_FLIP = {"shear", "stagger", "buckle"}
 BASE_ATOMS = {"N1", "N2", "N3", "N4", "N6", "N7", "N9", "O2", "O4", "O6"}
 
-# ---------------------------------------------------------------------------
-# ProSco and Z' lookup
-# ---------------------------------------------------------------------------
-
-
 class ProScoLookup:
-    """ProSco lookup with bp/lw → _ANY/lw → _ANY/_ANY fallback."""
-
     def __init__(self, prosco_distributions: dict):
         self.dist = prosco_distributions.get(
             "prosco_distributions", prosco_distributions
@@ -97,8 +63,6 @@ class ProScoLookup:
 
 
 class ZPrimeLookup:
-    """Z' lookup with bp/lw → _ANY/lw → _ANY/_ANY fallback."""
-
     def __init__(self, z_tables: dict):
         self.tables = z_tables
 
@@ -126,19 +90,9 @@ class ZPrimeLookup:
             return (value - M) / sl if sl > 1e-9 else None
 
 
-# ---------------------------------------------------------------------------
-# Cerny severity calculation
-# ---------------------------------------------------------------------------
-
-
 def cerny_severity(
     value, prosco_lookup, zprime_lookup, source, param, bp_type, lw_class
 ):
-    """severity = min(1, |Z'|/5) * clamp((5-ProSco)/5, 0, 1), 0 if ProSco >= 5.
-
-    The ProSco ramp keeps severity continuous at the boundary. Keep in sync
-    with the engine's scoring/issues.py.
-    """
     p = prosco_lookup.prosco(value, source, param, bp_type, lw_class)
     if p is None or p >= 5.0:
         return 0.0
@@ -150,7 +104,6 @@ def cerny_severity(
 
 
 def clash_severity(overlap):
-    """clamp((overlap - CLASH_THRESHOLD) / (SEVERITY_CAP - CLASH_THRESHOLD), 0, 1)."""
     if overlap is None or (isinstance(overlap, float) and math.isnan(overlap)):
         return 0.0
     span = SEVERITY_CAP - CLASH_THRESHOLD
@@ -158,7 +111,6 @@ def clash_severity(overlap):
 
 
 def canonical_count(cat_dists, bp_type, lw_class):
-    """Modal num_base_hbonds for (bp_type, lw_class) cell."""
     canonical_bp, _ = canonicalize_bp(bp_type, lw_class)
     table = cat_dists.get("pairs", {}).get("num_base_hbonds", {})
     for key in (f"{canonical_bp}/{lw_class}", f"_ANY/{lw_class}", "_ANY/_ANY"):
@@ -169,15 +121,9 @@ def canonical_count(cat_dists, bp_type, lw_class):
     return 1
 
 
-# ---------------------------------------------------------------------------
-# Compute severities for a pair dataset
-# ---------------------------------------------------------------------------
-
-
 def compute_severities(
     pairs_df, hbonds_df, prosco_lookup, zprime_lookup, cat_dists
 ):
-    """Returns DataFrame with one severity column per parameter + pdb_id."""
     hb = hbonds_df[
         hbonds_df.donor_atom.isin(BASE_ATOMS)
         & hbonds_df.acceptor_atom.isin(BASE_ATOMS)
@@ -189,21 +135,12 @@ def compute_severities(
         bp, lw = r.bp_type, r.lw_class
 
         def pv(p):
-            # No sign flip here: ProScoLookup.prosco and ZPrimeLookup.zprime each
-            # apply maybe_flip internally. Flipping here as well cancelled it, so
-            # shear/stagger/buckle were evaluated in the un-canonicalised
-            # orientation against canonicalised cells for the ~38% of reference
-            # pairs that need swapping, and the fitted weights disagreed with the
-            # runtime engine (which flips exactly once).
             return getattr(r, p)
 
         row = {"pdb_id": r.pdb_id}
-        # 6 pair geometry parameters individually
         for p in PAIR_PARAMS:
             row[p] = cerny_severity(pv(p), prosco_lookup, zprime_lookup, "pairs", p, bp, lw)
 
-        # H-bond parameters across base-base bonds. Distance follows the
-        # WC/strong-bond policy (mirrors issues.py); angles take max over bonds.
         sub = hbg.get((r.pdb_id, r.pair_idx))
         d_sev = angle_sev = 0.0
         if sub is not None:
@@ -215,7 +152,6 @@ def compute_severities(
                 default=0.0,
             )
             for h in bonds:
-                # Combine donor and acceptor angles into single hbond_angles severity
                 donor_sev = cerny_severity(
                     h.donor_angle, prosco_lookup, zprime_lookup, "hbonds", "donor_angle", bp, lw
                 )
@@ -226,23 +162,16 @@ def compute_severities(
         row["distance"] = d_sev
         row["hbond_angles"] = angle_sev
 
-        # incorrect hbond count: (canonical - actual) / canonical
         can = canonical_count(cat_dists, bp, lw)
         act = int(r.num_base_hbonds)
         row["incorrect_hbond_count"] = (
             0.0 if (can <= 0 or act >= can) else (can - act) / can
         )
 
-        # Steric clash, from the raw overlap emitted by `parse --details`.
         row["clash"] = clash_severity(getattr(r, "clash_overlap", None))
 
         rows.append(row)
     return pd.DataFrame(rows)
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 
 def main():
@@ -287,7 +216,6 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load distributions
     print("Loading distributions...")
     with open(args.distributions) as f:
         param_dists = json.load(f)
@@ -301,7 +229,6 @@ def main():
         z_tables = json.load(f)
     zprime_lookup = ZPrimeLookup(z_tables)
 
-    # Load reference tables
     print("Loading reference tables...")
     good_p = pd.read_csv(args.features_dir / "pairs.csv")
     good_h = pd.read_csv(args.features_dir / "hbonds.csv")
@@ -310,13 +237,11 @@ def main():
     print(f"  GOOD:  {len(good_p)} pairs / {good_p.pdb_id.nunique()} structs")
     print(f"  POOR:  {len(poor_p)} pairs / {poor_p.pdb_id.nunique()} structs")
 
-    # Compute severities
     print("\nComputing severities for GOOD set...")
     g_sev = compute_severities(good_p, good_h, prosco_lookup, zprime_lookup, cat_dists)
     print("Computing severities for POOR set...")
     p_sev = compute_severities(poor_p, poor_h, prosco_lookup, zprime_lookup, cat_dists)
 
-    # Compute mean severity for each parameter in each set
     print("\n" + "=" * 70)
     print("SHANNON (LOG-ODDS) WEIGHTS - Individual Parameters")
     print("=" * 70)
@@ -324,17 +249,14 @@ def main():
     n_good = len(g_sev)
     n_poor = len(p_sev)
 
-    # Laplace smoothing: (sum + 1) / (n + 2) to avoid log(0)
     results = []
     for param in FEATURES:
         mean_good = g_sev[param].mean()
         mean_poor = p_sev[param].mean()
 
-        # Laplace smoothing
         s_good = (mean_good * n_good + 1) / (n_good + 2)
         s_poor = (mean_poor * n_poor + 1) / (n_poor + 2)
 
-        # Log-odds (clip negative to 0)
         if s_good > 0:
             raw_logodds = max(0.0, math.log(s_poor / s_good))
         else:
@@ -354,7 +276,6 @@ def main():
             }
         )
 
-    # Renormalize to sum = 100
     total_logodds = sum(r["raw_logodds"] for r in results)
     if total_logodds < 1e-9:
         raise ValueError("All log-odds are zero or negative - something is wrong")
@@ -362,7 +283,6 @@ def main():
     for r in results:
         r["weight"] = 100.0 * r["raw_logodds"] / total_logodds
 
-    # Sort by weight descending
     results.sort(key=lambda r: -r["weight"])
 
     print(
@@ -386,7 +306,6 @@ def main():
         details = ", ".join(f"{p}={weights_dict.get(p,0):.1f}" for p in params)
         print(f"  {grp:25s}: {total_w:6.2f}  ({details})")
 
-    # Save to JSON
     output = {
         "schema_version": "4.0-per-parameter-shannon",
         "generated_at": datetime.datetime.utcnow().strftime("%Y-%m-%d"),

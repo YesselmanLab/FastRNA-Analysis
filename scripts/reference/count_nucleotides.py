@@ -1,23 +1,4 @@
-"""Count nucleotides per structure and write them into the PDB metadata cache.
-
-    python scripts/reference/count_nucleotides.py            # update metadata_cache.json
-    python scripts/reference/count_nucleotides.py --dry-run  # report changes only
-
-A nucleotide is any residue of model 1 that belongs to a polymer entity the entry
-declares as RNA, DNA or an RNA/DNA hybrid (mmCIF `_entity_poly.type`). The residue
-name is not consulted, so modified (e.g. pseudouridine, 2'-O-methyl), locked (LNA)
-and mirror-image (L-RNA) nucleotides are all counted, and bound nucleotide ligands
-(non-polymer entities) are not.
-
-This replaces the original count, which kept only residues named A/C/G/U, DA/DC/DG/DT
-and eight common modified bases: structures built entirely from other residue types
-(e.g. 2X2Q, LNA; 8F24, L-RNA; 469D, 2'-O-methoxyethyl RNA) were counted as 0 and
-modified residues elsewhere were left out.
-
-Reads data/structures/<PDB>.cif (scripts/fetch_structures.py); entries without a local
-file keep their existing count. Updates nucleotide_counts in
-data/reference/metadata/metadata_cache.json in place.
-"""
+"""Count nucleotides per structure and write them into the PDB metadata cache."""
 from __future__ import annotations
 
 import argparse
@@ -49,7 +30,7 @@ def count(pdb: str) -> tuple[str, int | None]:
                 if entity is not None and entity.polymer_type in NUCLEIC:
                     seen.add((chain.name, str(res.seqid)))
         return pdb, len(seen)
-    except Exception:          # unreadable file: keep the existing count
+    except Exception:
         return pdb, None
 
 

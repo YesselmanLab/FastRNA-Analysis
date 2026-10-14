@@ -1,21 +1,4 @@
-"""Time-reversal (regression-to-the-mean) control, recomputed at the paper's threshold.
-
-The earlier published control selects at score < 75, via
-``loaders.FLAGGED_SCORE_THRESHOLD``. Every figure in this repo uses 80 ("Review-tier
-base pairs score <= 80"), so the control was defending a claim at a threshold the
-claim is not made at. This recomputes it at 80, and at 75 as a reproduction check
-against the published numbers.
-
-Logic, unchanged from the original: pairs flagged in model X are followed into model
-Y and the gain is measured. Regression to the mean is direction-symmetric, so if the
-forward gain were RTM, selecting in the re-refined model and looking back at the
-deposited one would show a comparable move.
-
-The estimator is one structure, one vote, paired on structures that contribute in
-both directions -- see _rtm.py. A pair-weighted mean here is a mean over ribosomes:
-the largest structures carry a wildly disproportionate share of the matched pairs.
-The pair-weighted numbers are kept alongside so the difference is visible.
-"""
+"""Time-reversal (regression-to-the-mean) control, recomputed at the paper's threshold."""
 import json
 import sys
 from pathlib import Path
@@ -32,8 +15,6 @@ ROOT = Path(__file__).resolve().parents[2]
 def load_redo_pairs() -> pd.DataFrame:
     raw = json.loads((ROOT / "data/validation/pdb_redo_pairs_comparison.json").read_text())
     return pd.DataFrame(raw["pairs"])[["pdb_id", "orig_score", "redo_score"]].dropna()
-
-
 
 
 if __name__ == "__main__":

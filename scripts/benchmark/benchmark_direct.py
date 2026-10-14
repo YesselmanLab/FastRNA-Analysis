@@ -1,17 +1,4 @@
-"""Time each tool's own command directly on unchanged local mmCIF files.
-
-Only subprocess launch through exit is timed. No input normalization, model
-filtering, adapter retries, conversion, or additional Python worker is used.
-
-With --workers N, N structures are benchmarked at once (each tool process is
-still single-threaded; keep N at or below half the performance cores). Within a
-structure, tools and repeats run one after another in a seeded random order.
-Before a structure's first trial its file is read in full (the checksum), untimed,
-so the first tool does not pay for the disk read; this replaces warm-up runs.
-
-Recorded outputs carry no machine-specific paths: commands are written with the
-tool name and WORK/<file>, inputs and tool locations relative to the repo.
-"""
+"""Time each tool's own command directly on unchanged local mmCIF files."""
 import argparse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -32,13 +19,12 @@ import benchmark_all as common
 
 ROOT = common.ROOT
 HERE = Path(__file__).resolve().parent
-STOP = threading.Event()   # set on interrupt: workers stop, killed trials are not recorded
-ACTIVE = {}               # id -> running tool process, killed on interrupt
+STOP = threading.Event()
+ACTIVE = {}
 ACTIVE_LOCK = threading.Lock()
 
 
 def public_path(value):
-    """A path as it may be published: relative to the repo, else just its name."""
     path = Path(value)
     try:
         return str(path.resolve().relative_to(ROOT))
@@ -47,23 +33,22 @@ def public_path(value):
 
 
 def public_config(config):
-    """config.json with every absolute path made repo-relative (or a bare name)."""
     return {key: public_path(value) if isinstance(value, str) and value.startswith("/") else value
             for key, value in config.items()}
 
 
 def public_requirement(line):
-    """A `pip freeze` line; a local install (`name @ file:///...`) keeps only its repo path."""
     name, sep, url = line.partition(" @ file://")
     return f"{name} @ {public_path(url)}" if sep else line
 
 
 def public_command(command, work, config):
-    """The command as a reader would type it: tool names, WORK/ for the run folder."""
     python_bin = Path(config["python"]).parent
     names = {config.get(k): k for k in ("parse", "rnaview", "bpnet") if config.get(k)}
     names.update({config.get("dssr"): "x3dna-dssr", config["python"]: "python",
                   str(python_bin / "barnaba"): "barnaba", str(python_bin / "annotator"): "annotator"})
+    if config.get("clarna"):
+        names.update({config["clarna_python"]: "python2.7", config["clarna"]: "clarna.py"})
     shown = []
     for part in map(str, command):
         if part in names:
@@ -86,17 +71,34 @@ def command_for(tool, cif, work, config):
     if tool == "rnaview":
         return [config["rnaview"], "--cif", cif.name]
     if tool == "barnaba":
-        # Despite this option's name, installed MDTraj natively reads mmCIF.
         return [str(python_bin / "barnaba"), "ANNOTATE", "--pdb", str(cif), "-o", "annotation"]
     if tool == "rnapolis":
         return [str(python_bin / "annotator"), str(cif), "--json", "annotation.json"]
     if tool == "bpnet":
         return [config["bpnet"], cif.name]
+    if tool == "clarna":
+        return [config["clarna_python"], config["clarna"], "-i", cif.name,
+                "--normalize-graph", "--save-graph", "graph.json"]
     raise ValueError(tool)
 
 
+CLARNA_LW = re.compile(r"^([WHS])([WHS])_(cis|tran)$")
+
+
+def clarna_pairs(graph):
+    names = [node["id"] for node in graph["nodes"]]
+    pairs = []
+    for link in graph["links"]:
+        if link.get("type") != "contact" or link.get("is_alt"):
+            continue
+        match = CLARNA_LW.match(link.get("desc", ""))
+        if match:
+            lw = ("c" if match[3] == "cis" else "t") + match[1] + match[2]
+            pairs.append([names[link["source"]], names[link["target"]], lw])
+    return pairs
+
+
 def validate_output(tool, cif, work, stdout, stderr):
-    """Check native output AFTER timing; return repeatable annotation records."""
     if tool.startswith("parse"):
         data = json.loads(stdout)
         pairs = data.get("pairs", [])
@@ -139,16 +141,19 @@ def validate_output(tool, cif, work, stdout, stderr):
         if path is None:
             raise ValueError("Missing FR3D annotation file")
         return [line.split("\t") for line in path.read_text().splitlines() if line.strip()]
+    if tool == "clarna":
+        if "find contacts .. DONE" not in stdout:
+            raise ValueError("ClaRNA did not finish contact classification")
+        return clarna_pairs(json.loads((work / "graph.json").read_text()))
     raise ValueError(tool)
 
 
 def run_trial(tool, row, repeat, args, config, output, reference_dir, source_hash):
-    # Short paths accommodate legacy native path buffers. The input is a symlink
-    # to the original file, with no changes to coordinates, models, or chains.
     with tempfile.TemporaryDirectory(prefix="rnad-", dir="/tmp") as temp:
         work = Path(temp)
-        cif = work / Path(row["source_path"]).name
-        cif.symlink_to(row["source_path"])
+        source = row["clarna_path"] if tool == "clarna" else row["source_path"]
+        cif = work / Path(source).name
+        cif.symlink_to(source)
         command = command_for(tool, cif, work, config)
         env = {**os.environ, **common.THREAD_ENV, "PYTHONHASHSEED": "0",
                "TMPDIR": str(work), "XDG_CACHE_HOME": str(work / "cache"),
@@ -175,9 +180,8 @@ def run_trial(tool, row, repeat, args, config, output, reference_dir, source_has
         finally:
             with ACTIVE_LOCK:
                 ACTIVE.pop(id(proc), None)
-        if STOP.is_set():          # killed by an interrupt: not a real result, rerun on resume
+        if STOP.is_set():
             raise KeyboardInterrupt
-        # Everything below, including output parsing and log writing, is untimed.
         stdout = stdout.decode(errors="replace")
         stderr = stderr.decode(errors="replace")
         result = {"pdb": row["pdb"], "nucleotides": row["nucleotides"], "tool": tool,
@@ -190,6 +194,9 @@ def run_trial(tool, row, repeat, args, config, output, reference_dir, source_has
                 pairs = validate_output(tool, cif, work, stdout, stderr)
                 records = sorted(json.dumps(p, sort_keys=True, separators=(",", ":")) for p in pairs)
                 result.update(pair_count=len(pairs), output_sha256=hashlib.sha256("\n".join(records).encode()).hexdigest())
+                if tool == "clarna" and repeat == 0:
+                    (output / "clarna_pairs").mkdir(exist_ok=True)
+                    (output / "clarna_pairs" / f"{row['pdb']}.json").write_text(json.dumps(pairs))
             except Exception as error:
                 result.update(status="invalid_output", error=f"{type(error).__name__}: {error}")
         log = output / "logs" / f"{row['pdb']}_{tool}_{repeat}.log"
@@ -204,6 +211,8 @@ def main():
     ap.add_argument("--input", type=Path, default=ROOT / "data/structures",
                     help="folder of <ID>.cif files (scripts/fetch_structures.py)")
     ap.add_argument("--cohort", type=Path, default=ROOT / "data/benchmark/dssr_PARSE_time_benchmark.csv")
+    ap.add_argument("--clarna-input", type=Path, default=ROOT / ".runtime-tools/clarna-inputs",
+                    help="prepared <ID>.pdb files for ClaRNA (scripts/benchmark/clarna_input.py)")
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--tools", default=",".join(common.TOOLS))
     ap.add_argument("--runs", type=int, default=3)
@@ -211,6 +220,8 @@ def main():
                     help="untimed tool runs per structure (default 0: the input is pre-read instead)")
     ap.add_argument("--workers", type=int, default=1, help="structures benchmarked at once")
     ap.add_argument("--timeout", type=float, default=600)
+    ap.add_argument("--skip-after-timeout", action="store_true",
+                    help="after a tool times out on a structure, record its remaining repeats as skipped")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--pdbs")
     ap.add_argument("--seed", type=int, default=20261008)
@@ -244,9 +255,17 @@ def main():
     for row in rows:
         source = (args.input / f"{row['pdb']}.cif").resolve()
         row.update(source_path=str(source), size=source.stat().st_size)
-    # The manifest as published: the input relative to the repo, no absolute paths.
+    if "clarna" in tools:
+        missing = [r["pdb"] for r in rows if not (args.clarna_input / f"{r['pdb']}.pdb").is_file()]
+        if missing:
+            ap.error(f"{len(missing)} ClaRNA inputs missing from {args.clarna_input}, e.g. {missing[:5]}; "
+                     "run scripts/benchmark/clarna_input.py")
+        for row in rows:
+            row["clarna_path"] = str((args.clarna_input / f"{row['pdb']}.pdb").resolve())
     manifest = [{"pdb": r["pdb"], "nucleotides": r["nucleotides"],
-                 "input": public_path(r["source_path"]), "size": r["size"]} for r in rows]
+                 "input": public_path(r["source_path"]), "size": r["size"],
+                 **({"clarna_input_sha256": common.sha(r["clarna_path"])} if "clarna_path" in r else {})}
+                for r in rows]
     executables = {"python": config["python"]}
     for tool in tools:
         if tool.startswith("parse") or tool in ("dssr", "rnaview", "bpnet"):
@@ -254,15 +273,24 @@ def main():
             executables[key] = config[key]
         elif tool in ("barnaba", "rnapolis"):
             executables[tool] = str(Path(config["python"]).parent / ("annotator" if tool == "rnapolis" else tool))
+        elif tool == "clarna":
+            executables.update(clarna=config["clarna"], clarna_python=config["clarna_python"])
     metadata = {"protocol": "direct_cli_original_mmcif_v2", "tools": tools,
                 "runs": args.runs, "warmups": args.warmups, "workers": args.workers,
                 "warm_input": "each input is read in full (checksum), untimed, before its first trial",
                 "timeout": args.timeout, "seed": args.seed, "limit": args.limit, "pdbs": args.pdbs,
+                **({"skip_after_timeout": True} if args.skip_after_timeout else {}),
                 "config": public_config(config), "hardware": common.hardware(),
                 "platform": common.platform.platform(),
                 "thread_environment": common.THREAD_ENV, "cohort_sha256": common.sha(args.cohort),
                 "script_hashes": {name: common.sha(HERE / name) for name in
-                                  ("benchmark_direct.py", "benchmark_all.py", "_annotators.py")},
+                                  ("benchmark_direct.py", "benchmark_all.py", "_annotators.py")
+                                  + (("clarna_input.py",) if "clarna" in tools else ())},
+                **({"clarna_input": "PDB format from clarna_input.py (model 1, nucleotides, aliased chains); "
+                                    "conversion untimed here, see its conversion.csv",
+                    "clarna_packages": subprocess.check_output(
+                        [config["clarna_python"], "-m", "pip", "freeze"], text=True,
+                        stderr=subprocess.DEVNULL).splitlines()} if "clarna" in tools else {}),
                 "executable_hashes": {key: common.sha(value) for key, value in executables.items()},
                 "packages": [public_requirement(line) for line in subprocess.check_output(
                     [config["python"], "-m", "pip", "freeze"], text=True,
@@ -285,19 +313,16 @@ def main():
     print(f"Direct CLI: {len(rows)} original mmCIFs; {len(tools)} modes; "
           f"{args.warmups} warm-up + {args.runs} repeats; {args.workers} structure(s) at once. "
           "No model filtering or conversion.", flush=True)
-    # matplotlib (imported by barnaba) builds its font cache on first use; do that
-    # once here, untimed, rather than inside whichever trial happens to come first.
     subprocess.run([config["python"], "-c", "import matplotlib.font_manager"],
                    env={**os.environ, "MPLCONFIGDIR": str(output / "mpl-cache")}, check=False,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # Turn controlled shutdown into cleanup of any running tool process group.
     def stopped(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stopped)
-    lock = threading.Lock()   # one writer at a time: trials.jsonl, the console, the reports
+    lock = threading.Lock()
 
     def bench_structure(index, row, handle, reference):
-        source_hash = common.sha(row["source_path"])   # untimed full read: input now cached
+        source_hash = common.sha(row["source_path"])
         if row["pdb"] in prior_hashes and prior_hashes[row["pdb"]] != source_hash:
             raise ValueError(f"Input changed: {row['pdb']}")
         rng = random.Random(f"{args.seed}:{row['pdb']}")
@@ -309,7 +334,13 @@ def main():
                     return
                 if (row["pdb"], tool, repeat) in done:
                     continue
-                result = run_trial(tool, row, repeat, args, config, output, reference, source_hash)
+                if args.skip_after_timeout and any(
+                        r["pdb"] == row["pdb"] and r["tool"] == tool and r["status"] == "timeout" for r in trials):
+                    result = {"pdb": row["pdb"], "nucleotides": row["nucleotides"], "tool": tool,
+                              "repeat": repeat, "warmup": repeat < 0, "wall_seconds": 0.0,
+                              "status": "skipped_after_timeout", "source_sha256": source_hash}
+                else:
+                    result = run_trial(tool, row, repeat, args, config, output, reference, source_hash)
                 with lock:
                     handle.write(json.dumps(result, sort_keys=True) + "\n")
                     handle.flush()
@@ -332,9 +363,9 @@ def main():
                 for future in as_completed(futures):
                     future.result()
             except BaseException:
-                STOP.set()                       # workers stop at their next trial
+                STOP.set()
                 with ACTIVE_LOCK:
-                    for proc in list(ACTIVE.values()):   # and the running tools are killed now
+                    for proc in list(ACTIVE.values()):
                         try:
                             os.killpg(proc.pid, signal.SIGKILL)
                         except ProcessLookupError:

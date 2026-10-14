@@ -1,31 +1,4 @@
-"""FastRNA's identified-and-classified candidates, before selection, for every structure.
-
-Figure 2 and S3 use these candidates to credit discarded pairs when the comparison
-tool reports the same pair. The export itself retains the full candidate set.
-data/comparison/parse_pairs.json holds only the selected output, so this runs the C++
-engine's `dump-selection` command, which tags every candidate with the production
-selection's own disposition, and keeps the identified ones:
-
-    selected     in the output
-    competition  valid and eligible, displaced by a competing pair   (not_selected)
-    ineligible   fails class_valid, no strong base-base H-bond        (no_strong_hbond)
-    stacking     stacking signature                                   (stacking)
-    low_score    below the selection score floor                      (low_score)
-
-`invalid` (failed geometric validation) and `adjacent` (sequence neighbours) are left
-out, as they are in Figure 2A. As a consistency check the `selected` set of each
-structure is compared with parse_pairs.json (the published output every figure uses).
-Where they differ -- 6 of 1,183 structures on 2026-10-07: one pair each in 6QUL and
-7K16 (engine build), and residue numbering/chains in the other four (a different
-copy of the structure file) -- entries are listed under "fallback_to_output" and
-retain selected output only in Figure 2/S3 agreement comparisons.
-The script refuses to write if more than 1% differ.
-
-Usage: python scripts/validation/extract_parse_candidates.py [PARSE_BINARY] [STRUCTURE_DIR]
-Defaults: $PARSE_ENGINE or `parse` on PATH; data/structures (scripts/fetch_structures.py)
-Writes data/comparison/parse_candidates.json:
-    {pdb: {"status": "ok", "pairs": [[chain1, num1, chain2, num2, lw, disposition], ...]}}
-"""
+"""FastRNA's identified-and-classified candidates, before selection, for every structure."""
 import argparse
 import hashlib
 import json
@@ -45,7 +18,6 @@ IDENTIFIED = {"selected", "competition", "ineligible", "stacking", "low_score"}
 
 
 def split_res(res_id):
-    """'R-4SU-8' -> ('R', '8'); the number keeps a sign and any insertion code."""
     chain, _name, num = res_id.split("-", 2)
     return chain, num
 
@@ -100,7 +72,7 @@ def main():
                  f"e.g. {mismatched[:5]}: the binary does not match the published output; "
                  "check both coordinates and dump-selection LW orientation")
     fallback = sorted(p for p, _ in mismatched)
-    for pdb in fallback:   # published output only, all as "selected"
+    for pdb in fallback:
         result[pdb] = [[*r[:5], "selected"] for r in published[pdb]["pairs"]]
 
     data = {p: {"status": "ok", "pairs": result[p]} for p in pdbs}

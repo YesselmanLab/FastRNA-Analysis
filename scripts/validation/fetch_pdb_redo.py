@@ -1,15 +1,4 @@
-"""Download PDB-REDO re-refined coordinates for the validation set.
-
-For each candidate PDB id, fetch ``<id>_final.pdb`` from pdb-redo.eu into
-``data/validation/redo_files/<ID>/<ID>.pdb``. IDs without a PDB-REDO entry
-(HTTP 404) are skipped - the ids that succeed ARE the validation set that
-compare_pdb_redo_cpp.py then scores against the original RCSB coordinates.
-
-Candidates default to the non-redundant RNA set
-(reference_sets/uniqueRNAS.csv), so the validation set is reproducible from a
-shipped input. Note PDB-REDO is a living database: re-fetching may add/refresh a
-few entries versus the archived comparison.
-"""
+"""Download PDB-REDO re-refined coordinates for the validation set."""
 
 import argparse
 import time
@@ -27,7 +16,6 @@ URL = "https://pdb-redo.eu/db/{p}/{p}_final.pdb"
 
 
 def candidate_ids(list_path: Path) -> list[str]:
-    """4-char upper PDB ids from a CSV (unique_pdb_id col) or a plain id list."""
     if list_path.suffix.lower() == ".csv":
         df = pd.read_csv(list_path)
         col = "unique_pdb_id" if "unique_pdb_id" in df.columns else df.columns[0]

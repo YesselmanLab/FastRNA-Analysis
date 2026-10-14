@@ -1,19 +1,4 @@
-"""Score original (RCSB) vs PDB-REDO re-refined coordinates with the C++ engine.
-
-For each structure that has a cached PDB-REDO file (run fetch_pdb_redo.py first),
-run the production ``parse`` binary twice:
-
-    * original  ->  parse <PDBID>                    (parse fetches from RCSB)
-    * PDB-REDO  ->  parse redo_files/<PDB>/<PDB>.pdb  (fetched _final.pdb)
-
-and write both validation files (raw scores only; deltas computed in-notebook):
-
-    data/validation/pdb_redo_comparison_all.json    (structure-level aggregates)
-    data/validation/pdb_redo_pairs_comparison.json  (per matched base pair)
-
-Build the engine and set PARSE_ENGINE (or put `parse` on PATH) - see the repo
-README. The validation set is whatever REDO files are present under --redo-cache.
-"""
+"""Score original (RCSB) vs PDB-REDO re-refined coordinates with the C++ engine."""
 
 import argparse
 import datetime
@@ -44,7 +29,6 @@ def _init_worker(engine: str, redo_cache: Path) -> None:
 
 
 def run_parse(arg: str) -> dict | None:
-    """Run `parse` on a PDB id or coordinate file; return its JSON (stdout)."""
     src = [arg] if Path(arg).exists() else _engine.structure_args(arg)
     try:
         out = subprocess.run([_ENGINE, *src], capture_output=True, text=True, timeout=900)
@@ -59,11 +43,6 @@ def run_parse(arg: str) -> dict | None:
 
 
 def extract(d: dict) -> tuple[dict, list[dict]]:
-    """(structure-level scores, per-pair records) from one parse output.
-
-    Only unambiguously classified pairs carry a numeric score; ambiguous
-    ("X|Y") pairs have score None and are counted as skipped.
-    """
     pairs = d.get("pairs", [])
     scored = [p for p in pairs if isinstance(p.get("score"), (int, float))]
     issues: Counter = Counter()
@@ -95,7 +74,6 @@ def extract(d: dict) -> tuple[dict, list[dict]]:
 
 
 def match_pairs(orig: list[dict], redo: list[dict]) -> list[dict]:
-    """Match by (res_id1, res_id2, lw_class), trying both orientations."""
     idx: dict[tuple, dict] = {}
     for p in redo:
         idx[(p["res_id1"], p["res_id2"], p["lw_class"])] = p
@@ -115,7 +93,6 @@ def match_pairs(orig: list[dict], redo: list[dict]) -> list[dict]:
 
 
 def process_one(pdb: str) -> dict:
-    """Score original + REDO for one PDB; return the combined record."""
     do = run_parse(pdb)
     if do is None:
         return {"status": "fail", "failure": {"pdb": pdb, "stage": "original", "error": "parse failed"}}
@@ -137,7 +114,6 @@ def process_one(pdb: str) -> dict:
 
 
 def discover_cached(redo_cache: Path) -> list[str]:
-    """PDB IDs with a cached REDO coordinate file (<PDB>/<PDB>.pdb)."""
     out = []
     for d in sorted(redo_cache.iterdir()):
         if d.is_dir() and (d / f"{d.name}.pdb").exists():

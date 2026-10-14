@@ -1,17 +1,4 @@
-"""Loaders for the engine-output archive the re-solved cohort is built from.
-
-Everything is read from data/: the per-residue and per-pair engine output over the
-non-redundant set and over the extra members of each BGSU equivalence class
-(data/reference/engine_archive/), and the PDB metadata.
-
-    residues_orig     one row per classifiable residue of every non-redundant entry:
-                      pdb_id, res_id, chain, num, base_type, suiteness, is_outlier,
-                      pucker_outlier, pperp, s_delta
-    residues_expand   the same (fewer columns) for the extra class members
-    pairs_orig        one row per selected base pair: pdb_id, res_id1, res_id2,
-                      lw_class, score, tier
-    pairs_expand      the same for the extra class members
-"""
+"""Loaders for the engine-output archive the re-solved cohort is built from."""
 from __future__ import annotations
 
 import json
@@ -46,7 +33,6 @@ def uniques() -> pd.DataFrame:
 
 
 def metadata() -> pd.DataFrame:
-    """pdb_id, resolution, method and nucleotide count from metadata_cache.json."""
     md = json.loads((DATA / "reference" / "metadata" / "metadata_cache.json").read_text())
     nt = md.get("nucleotide_counts", {})
     rows = []

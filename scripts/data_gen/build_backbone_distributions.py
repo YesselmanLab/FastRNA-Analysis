@@ -1,29 +1,4 @@
-"""Build per-(conformer, suite-torsion) ProSco + Z' tables from the GOOD reference.
-
-Backbone analogue of build_prosco_distributions.py / build_z_tables.py. The
-scoring *cell* is the Richardson conformer (the backbone twin of bp_type×lw_class):
-a torsion is only unimodal - and therefore ProSco/Z'-scorable - *within* a
-conformer. Pooling conformers makes each torsion multimodal, so there is NO
-_ANY fallback here; conformers with too few observations are simply omitted and
-the runtime falls back to the Richardson fixed width.
-
-Two backbone-specific details vs the pair pipeline:
-
-  * Suite reconstruction. torsions.csv stores per-residue alpha..zeta; the
-    7D suite needs the predecessor's delta/epsilon/zeta. We dedup to one row per
-    residue, join each residue's backbone predecessor, and assemble
-    [delta_prev, epsilon_prev, zeta_prev, alpha, beta, gamma, delta] in 0-360.
-
-  * Circular unwrap. Torsions wrap at 0/360, so before any linear KDE/quantile
-    we shift each value onto the branch nearest its conformer center:
-        unwrapped = center + signed_gap(value, center)
-    Values then sit contiguously in (center-180, center+180]. The center is
-    stored per cell as ``unwrap_center`` so the runtime reproduces it exactly.
-
-Outputs:
-    data/reference/scoring_tables/backbone_prosco_distributions.json   {"backbone": {angle: {conf: cell}}}
-    data/reference/scoring_tables/backbone_z_tables.json               {"backbone": {angle: {conf: cell}}}
-"""
+"""Build per-(conformer, suite-torsion) ProSco + Z' tables from the GOOD reference."""
 
 from __future__ import annotations
 
@@ -48,24 +23,16 @@ REF = REPO / "data" / "reference"
 PHI_INV_09 = 1.2815515655446004
 MIN_OBS = 10
 
-# The three suite positions taken from the residue itself vs its predecessor.
-# suite = [delta_prev, epsilon_prev, zeta_prev, alpha, beta, gamma, delta]
 _CUR_COLS = {"alpha": 3, "beta": 4, "gamma": 5, "delta": 6}
 _PREV_COLS = {"delta": 0, "epsilon": 1, "zeta": 2}
 
 
 def reconstruct_suites(df: pd.DataFrame) -> pd.DataFrame:
-    """One row per residue with its 7D suite (0-360), conformer, suite_bin, pdb.
-
-    Keeps only non-outlier residues with a real conformer - the reference
-    distribution of where each torsion sits *when the residue is in* that cluster.
-    """
     res = df.drop_duplicates(subset=["pdb_id", "res_id"]).copy()
 
     rows = []
     for pdb_id, g in res.groupby("pdb_id"):
         by_id = {r.res_id: r for r in g.itertuples(index=False)}
-        # order residues within each chain by (seq_num, icode)
         ordered: dict[str, list] = {}
         for r in g.itertuples(index=False):
             p = parse_res_seq(r.res_id)
@@ -156,7 +123,6 @@ def main() -> None:
         pdb_series = g["pdb_id"].reset_index(drop=True)
         for k, angle in enumerate(SUITE_ANGLE_NAMES):
             c = float(center[k])
-            # circular unwrap onto the branch nearest the conformer center
             unwrapped = np.array([c + signed_angle_gap(v, c) for v in g[angle].to_numpy(float)])
             pcell = build_prosco_cell(unwrapped, w, pdb_series)
             if pcell["prosco_per_bin"] is not None:

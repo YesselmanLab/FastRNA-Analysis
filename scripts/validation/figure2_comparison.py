@@ -1,15 +1,4 @@
-"""Supplemental paired selection audit with comparator-conditioned candidate credit.
-
-Each comparison retains FastRNA's selected output and adds classified discarded
-candidates only when that comparator reports the same residue pair. FastRNA's own
-LW label is preserved, including disagreements. Eligible candidate dispositions
-are selected, competition, ineligible, stacking, and low_score. Geometrically
-invalid candidates and adjacent residues are outside this benchmark.
-
-This audit excludes mismatched candidate/output archives. Figure 2A retains its
-archived classification metrics; Figure 2B-C and S3A-C retain the original full
-pair-list cohort with selected-output fallback for those mismatched archives.
-"""
+"""Supplemental paired selection audit with comparator-conditioned candidate credit."""
 from collections import Counter
 from functools import cached_property, lru_cache
 import csv
@@ -49,7 +38,6 @@ def pair_entry(a, b, label):
 
 
 def adjacent(a, b):
-    # Preserve the published benchmark's explicit sequence-neighbour exclusion.
     return a[0] == b[0] and abs(a[1] - b[1]) == 1
 
 
@@ -62,7 +50,6 @@ def classified(lw):
 
 
 def single_family(labels):
-    # Partial, ambiguous, and multiple labels are not definite class calls.
     return next(iter(labels)) if len(labels) == 1 and is_lw(next(iter(labels))) else None
 
 
@@ -154,8 +141,6 @@ class Comparison:
             pairs = ingest((residue(a, n), residue(b, m), lw)
                            for a, n, b, m, lw, disposition in rows
                            if disposition in IDENTIFIED and classified(lw))
-            # The archived final output is authoritative on already-selected pairs.
-            # This also preserves its explicit ambiguity labels. No comparator is used.
             pairs.update(self.selected[pdb])
             out[pdb] = pairs
         return out
@@ -165,7 +150,6 @@ class Comparison:
 
     @lru_cache(maxsize=None)
     def credited(self, comparator):
-        """Selected output plus discarded candidates reported by this comparator."""
         reference = self.tool(comparator)
         return {pdb: {**{key: labels for key, labels in self.identified[pdb].items()
                          if key in reference.get(pdb, {})}, **selected}
@@ -199,7 +183,6 @@ class Comparison:
 
     @lru_cache(maxsize=None)
     def detection_counts(self, a="parse", b="dssr", stage="credited"):
-        """Per-structure intersection/union counts, canonical then noncanonical."""
         pa, pb = self.pair_lists(a, b, stage)
         pdbs = sorted(pa.keys() & pb.keys())
         shared, union = np.zeros((len(pdbs), 2)), np.zeros((len(pdbs), 2))
@@ -233,13 +216,6 @@ class Comparison:
 
     @cached_property
     def dssr_stage_counts(self):
-        """Class-aware TP/predicted/reference counts, with one mask for all stages.
-
-        On the pre-selection/DSSR union, a pair with an unresolved class in either
-        present annotation is excluded from all stages. Absent pairs are not
-        exclusions. Incorrect definite classes count against precision and recall.
-        The reference denominator is fixed for identified, credited, and selected sets.
-        """
         dssr = self.tool("dssr")
         rows, excluded = [], 0
         for pdb in sorted(self.identified.keys() & dssr.keys()):

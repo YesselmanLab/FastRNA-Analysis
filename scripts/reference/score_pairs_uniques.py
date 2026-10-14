@@ -1,22 +1,4 @@
-"""Per-pair FastRNA scores over the non-redundant set.
-
-    python scripts/reference/score_pairs_uniques.py              # all 2,697 entries
-    python scripts/reference/score_pairs_uniques.py --limit 20   # quick check
-
-Runs the engine on every distinct entry of uniqueRNAS.csv and writes one JSON
-line per selected pair to data/reference/scores/pair_scores_uniques_parse.jsonl:
-``pdb_id, lw_class, is_ambiguous, score, sequence, issues``. Ambiguous ("X|Y")
-and DNA pairs are kept with a null score, so the ambiguity rate stays visible.
-
-uniqueRNAS.csv has one row per BGSU equivalence class (3,261) but only 2,697
-distinct entries: an entry that represents several classes, such as a ribosome
-with several RNA chains, appears once per class. The ids are de-duplicated
-before scoring, so every entry is scored exactly once. (The previous generator
-did not, which repeated every pair of 264 entries 2-19 times.)
-
-Reads data/structures/<PDB>.cif (scripts/fetch_structures.py). Output lines are
-sorted by entry, so the file is identical from run to run.
-"""
+"""Per-pair FastRNA scores over the non-redundant set."""
 from __future__ import annotations
 
 import argparse
@@ -45,7 +27,7 @@ def distinct_ids(path: Path) -> list[str]:
 def lw_of(pair: dict) -> tuple[str, bool]:
     c = pair.get("classification") or {}
     lw = c.get("lw_class") or ""
-    if lw.startswith("ambiguous"):            # "ambiguous (cWH|cWW)" -> "cWH|cWW"
+    if lw.startswith("ambiguous"):
         lw = lw.split("(", 1)[-1].rstrip(")")
     return lw, bool(c.get("is_ambiguous")) or "|" in lw
 
@@ -96,7 +78,7 @@ def main() -> None:
     n_rows = 0
     tmp = args.out.with_suffix(".jsonl.part")
     with open(tmp, "w") as out:
-        for pdb, st, rows in results:            # already in sorted id order
+        for pdb, st, rows in results:
             status[st] = status.get(st, 0) + 1
             for row in rows:
                 out.write(json.dumps(row) + "\n")

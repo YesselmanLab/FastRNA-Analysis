@@ -1,43 +1,4 @@
-"""Inter-annotator agreement across PARSE and the five-referee panel.
-
-Raters (6): PARSE (data/comparison/parse_pairs.json, run_parse_annotator.py)
-plus the five voting referees — published FR3D (BGSU Hub CSVs), RNAView,
-barnaba, RNApolis, BPNET. fr3d_local is non-voting and excluded. DSSR is NOT
-a rater here: its full per-structure pair lists are not on disk, and its
-appearances inside the data/comparison/{class}.json `differences` records
-are a disagreement-only (biased) sample, so it is omitted from every matrix
-below and this is stated in the output JSON.
-
-All loading goes through parse_analysis.annotators (the canonical-id layer):
-units are order-normalized PairKeys of ResidueId (multi-char chains and
-insertion codes intact), labels expressed in the canonical key direction.
-
-Metrics, written to data/validation/annotator_agreement.json:
-  1. detection_jaccard: per rater pair, pooled (micro) Jaccard of detected
-     pair-key sets over structures both cover with status ok, plus the
-     median (proper even-n median) per-structure Jaccard.
-  2. classification: per rater pair, over pair-keys both report with a single
-     LW family (null/partial labels skipped): percent agreement + Cohen's
-     kappa. Two variants: "strict" excludes PARSE-ambiguous pairs;
-     "lenient" scores a PARSE-ambiguous "X|Y" pair as agreeing when the other
-     rater's family is in {X, Y} (for kappa, PARSE's nominal label is then
-     the matching candidate, else the first candidate).
-  3. krippendorff_alpha (nominal) across all 6 raters: units = (structure,
-     pair-key) labeled with a single family by >= 2 raters; PARSE-ambiguous
-     pairs count as missing for PARSE. Leave-one-out alphas are PAIRED: for
-     each dropped rater, the SAME unit set (units still >= 2 raters without
-     the dropped one) is scored with and without that rater, and the paired
-     delta reported. Alpha is CONDITIONAL on co-detection (units detected and
-     single-family-labeled by >= 2 raters); the JSON carries that fraction
-     and a note, plus per-rater label-loss (pairs dropped for lacking a
-     unique single-family label).
-  4. parse_consensus_support: for each PARSE-detected pair, k = number of
-     the 5 referees covering that structure that also detect it, split by
-     PARSE-unambiguous vs PARSE-ambiguous.
-
-Run AFTER run_parse_annotator.py (and the referee runners):
-    python scripts/validation/annotator_agreement.py
-"""
+"""Inter-annotator agreement across PARSE and the five-referee panel."""
 
 import doctest
 import json
@@ -48,7 +9,7 @@ from pathlib import Path
 from statistics import median
 
 REPO = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # vendored annotators
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _vendor import annotators  # noqa: E402
 
 OUT = REPO / "data" / "validation" / "annotator_agreement.json"
@@ -76,7 +37,6 @@ COVERAGE_NOTE = (
 
 
 def load_raters() -> dict[str, dict[str, annotators.PairSets]]:
-    """All 6 raters as {rater: {pdb: canonical PairSets}} (ok structures only)."""
     raters: dict[str, dict[str, annotators.PairSets]] = {"parse": annotators.parse_pairs()}
     raters["fr3d"] = annotators.fr3d_pairs()
     for tool in REFEREES[1:]:
@@ -85,7 +45,6 @@ def load_raters() -> dict[str, dict[str, annotators.PairSets]]:
 
 
 def single_family(labels: set[str]) -> str | None:
-    """The unique single-family LW label, or None (ambiguous/partial/multi)."""
     if any("|" in lw for lw in labels):
         return None
     fams = {lw for lw in labels if len(lw) == 3 and lw[0] in "ct"}
@@ -93,7 +52,6 @@ def single_family(labels: set[str]) -> str | None:
 
 
 def ambiguous_candidates(labels: set[str]) -> set[str] | None:
-    """The candidate families of a PARSE-ambiguous label set, or None."""
     for lw in labels:
         if "|" in lw:
             return set(lw.split("|"))
@@ -105,7 +63,6 @@ def _fmt(x) -> str:
 
 
 def detection_matrix(raters: dict) -> dict:
-    """Pooled + median per-structure Jaccard of detected pair-key sets."""
     jac = {a: {a: 1.0} for a in RATERS}
     med = {a: {a: 1.0} for a in RATERS}
     n_shared = {a: {a: len(raters[a])} for a in RATERS}
@@ -132,7 +89,6 @@ def detection_matrix(raters: dict) -> dict:
 
 
 def cohen_kappa(pairs: list[tuple[str, str]]) -> float | None:
-    """Cohen's kappa for two raters' nominal labels (paired list)."""
     n = len(pairs)
     if n == 0:
         return None
@@ -144,7 +100,6 @@ def cohen_kappa(pairs: list[tuple[str, str]]) -> float | None:
 
 
 def _labelled_units(ra: dict, rb: dict, a_is_parse: bool, lenient: bool) -> list:
-    """Label pairs [(fa, fb), ...] for pair-keys both raters report."""
     out = []
     for key in ra.keys() & rb.keys():
         fb = single_family(rb[key])
@@ -161,7 +116,6 @@ def _labelled_units(ra: dict, rb: dict, a_is_parse: bool, lenient: bool) -> list
 
 
 def classification_pair(raters: dict, a: str, b: str, lenient: bool) -> dict:
-    """Percent agreement + kappa for one rater pair, one variant."""
     pairs: list[tuple[str, str]] = []
     for pdb in raters[a].keys() & raters[b].keys():
         pairs.extend(_labelled_units(raters[a][pdb], raters[b][pdb], a == "parse", lenient))
@@ -176,7 +130,6 @@ def classification_pair(raters: dict, a: str, b: str, lenient: bool) -> dict:
 
 
 def classification_matrices(raters: dict) -> dict:
-    """Both classification variants for every rater pair."""
     out: dict = {"strict": {}, "lenient": {}}
     for variant, lenient in (("strict", False), ("lenient", True)):
         cells = {a: {} for a in RATERS}
@@ -188,15 +141,6 @@ def classification_matrices(raters: dict) -> dict:
 
 
 def krippendorff_alpha(units: list[list[str]]) -> float:
-    """Krippendorff's alpha, nominal metric, from per-unit value lists.
-
-    Units with fewer than 2 values are ignored (missing data allowed).
-
-    >>> round(krippendorff_alpha([["a", "a"], ["a", "b"], ["b", "b"]]), 6)
-    0.444444
-    >>> krippendorff_alpha([["a", "a"], ["b", "b", "b"]])
-    1.0
-    """
     coincidence: Counter = Counter()
     for values in units:
         m = len(values)
@@ -216,7 +160,6 @@ def krippendorff_alpha(units: list[list[str]]) -> float:
 
 
 def alpha_units(raters: dict) -> dict[tuple, dict[str, str]]:
-    """(pdb, pair-key) -> {rater: family} for single-family labels only."""
     units: dict[tuple, dict[str, str]] = defaultdict(dict)
     for rater in RATERS:
         for pdb, pairs in raters[rater].items():
@@ -228,7 +171,6 @@ def alpha_units(raters: dict) -> dict[tuple, dict[str, str]]:
 
 
 def label_loss(raters: dict) -> dict:
-    """Per-rater count of detected pairs dropped for lacking a single family."""
     out = {}
     for rater in RATERS:
         n_pairs = n_labelled = 0
@@ -245,7 +187,6 @@ def label_loss(raters: dict) -> dict:
 
 
 def alpha_report(raters: dict) -> dict:
-    """Alpha for all 6 raters plus PAIRED leave-one-out alphas."""
     units = alpha_units(raters)
     all_values = [list(v.values()) for v in units.values() if len(v) >= 2]
     report = {
@@ -272,7 +213,6 @@ def alpha_report(raters: dict) -> dict:
 
 
 def consensus_support(raters: dict) -> dict:
-    """k-of-panel referee detection distribution for PARSE pairs."""
     dists = {"unambiguous": Counter(), "ambiguous": Counter()}
     panel5 = {"unambiguous": Counter(), "ambiguous": Counter()}
     for pdb, pairs in raters["parse"].items():
@@ -292,7 +232,6 @@ def consensus_support(raters: dict) -> dict:
 
 
 def sanity_checks() -> dict:
-    """Dedup record count + the consensus majority the normalization must match."""
     n_records = sum(1 for _ in annotators.disagreement_records())
     with open(REPO / "data" / "validation" / "annotator_consensus.json") as fh:
         consensus = json.load(fh)

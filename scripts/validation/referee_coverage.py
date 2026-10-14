@@ -1,22 +1,4 @@
-"""Referee coverage of FastRNA's rejections and its unique calls, current engine.
-
-The published tally in validation/annotator_consensus.json was computed from the
-July differences inventory (data/comparison/{class}.json, 2026-07-22); its own
-provenance note records that 24.9% of those disagreement pairs are absent from the
-current engine output and that 1,484 rejection records are now called. This script
-recomputes the two coverage panels directly from the CURRENT pair files, so the
-figure describes the engine that ships.
-
-Two populations, both restricted to structures every tool processed successfully:
-
-  rejected  - DSSR reports the pair, FastRNA does not
-  unique    - FastRNA reports the pair, DSSR does not
-
-For each pair we count how many of the five independent referees (published FR3D,
-RNAView, barnaba, RNApolis, BPNET) also report it. Matching is direction-agnostic
-on (chain, residue number) and ignores the class label: the question here is
-whether the interaction is seen at all, not how it is classified.
-"""
+"""Referee coverage of FastRNA's rejections and its unique calls, current engine."""
 import csv
 import json
 import sys
@@ -29,8 +11,7 @@ REFEREES = ["fr3d", "rnaview", "barnaba", "rnapolis", "bpnet"]
 
 
 def load_tool(name):
-    """{pdb: set of direction-agnostic pair keys}, only for structures it handled."""
-    if name == "fr3d":                       # published FR3D: one csv per structure
+    if name == "fr3d":
         out = {}
         for f in sorted((COMP / "fr3d").glob("*.csv")):
             keys = set()
@@ -54,7 +35,6 @@ def main():
     for n, d in tools.items():
         print(f"  {n:9s} {len(d):5,d} structures", flush=True)
 
-    # a structure counts only where every tool succeeded, so the panel size is 5
     shared = set.intersection(*(set(d) for d in tools.values()))
     print(f"\n{len(shared):,} structures processed by all {len(tools)} tools")
 

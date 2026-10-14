@@ -1,20 +1,4 @@
-"""Base identity of every residue in the tool-comparison structures.
-
-Figure 2 splits base-pair detection agreement into canonical (Watson-Crick G-C / A-U)
-and non-canonical pairs. The tool pair lists in data/comparison/*_pairs.json carry
-only residue ids and LW labels, and the residue names that are on disk (FastRNA's
-pairs.csv, FR3D's unit ids) cover only the residues those tools pair -- 8-26% of
-the other tools' pairs would go unclassified. This reads the structures themselves
-once and writes the parent base (A/C/G/U, modified residues mapped to their parent
-by gemmi's residue table) of every model-1 residue that has one, keyed the way the
-figure notebooks key residues: "chain|number|icode". Residues without an A/C/G/U
-parent (protein, ligands, unknown) are left out, so a missing key means "not a
-standard base" and such a pair counts as non-canonical.
-
-Usage: python scripts/validation/extract_residue_names.py [STRUCTURE_DIR]
-Default STRUCTURE_DIR: data/structures (fetch with scripts/fetch_structures.py)
-Writes data/comparison/residue_names.json.
-"""
+"""Base identity of every residue in the tool-comparison structures."""
 import json
 import sys
 from pathlib import Path

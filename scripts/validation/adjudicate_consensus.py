@@ -1,50 +1,4 @@
-"""Consensus adjudication of PARSE-vs-DSSR disagreements across five annotators.
-
-Panel: published FR3D (BGSU Hub) plus every locally-run annotator with an
-output file present — RNAView 2.x, barnaba, RNApolis, and BPNET/BPFIND (see
-run_third_annotators.py for tool provenance). All are independent of both
-PARSE and DSSR. Loading, lookup, and record iteration come from
-parse_analysis.annotators (the canonical-id layer). Per disagreement record
-each covering annotator is asked the same questions, then votes are tallied
-per record:
-
-  - class_disagreement (DSSR says C, PARSE says X or X|Y): comparisons are
-    DIRECTION-AGNOSTIC (the comparison files' LW labels are not reliably in
-    res_id1->res_id2 direction), so a referee class supports a side if it
-    equals that side's label OR its flip. A vote for the disputed class
-    counts for DSSR; a vote for ANY PARSE candidate not direction-equivalent
-    to the disputed class counts for PARSE; a referee hitting both sides
-    counts for both. Records whose every PARSE candidate is
-    direction-equivalent to the disputed class are DEGENERATE — excluded
-    from the tally and reported separately. Verdicts are reported for two
-    populations plus their pool: CLEAN records (single candidate, sharing
-    nothing with the disputed class or its flip) and SHARED-CANDIDATE
-    records (ambiguous X|Y candidate sets, which usually include the
-    disputed class or its flip); the pooled PARSE:DSSR ratio is a
-    conservative lower bound because a referee hit on a shared candidate
-    is scored for DSSR. The clean verdict is additionally re-tallied with
-    each referee dropped in turn (``class_disagreement_leave_one_referee_out``),
-    so no single referee can be carrying the result; both clean-population
-    definitions are reported (see LOO_DEFINITIONS).
-  - rejected_by_parse (DSSR reports pair, PARSE rejects): each annotator
-    either reports the pair (any class) or does not; records are tallied by
-    how many covering annotators corroborate DSSR's pair.
-  - python_only (PARSE reports pair, DSSR does not): same, for PARSE's pair;
-    exact-class confirmations counted separately (direction-agnostic).
-
-A local fr3d-python run (``fr3d_local``) is the same method as the published
-FR3D annotations, so it never votes; when its file is present the script
-instead reports its per-record agreement with the Hub annotations
-(fr3d-python self-describes its basepair annotations as not yet finalized).
-
-Coverage is explicit: a tool joins a record's panel only where its run
-status is ok, so per-record panels vary in size and every tally is reported
-against its panel size (panel_N keys). Writes
-data/validation/annotator_consensus.json.
-
-Run AFTER fetch_fr3d_basepairs.py and run_third_annotators.py:
-    python scripts/validation/adjudicate_consensus.py [--tools rnaview,barnaba]
-"""
+"""Consensus adjudication of PARSE-vs-DSSR disagreements across five annotators."""
 
 import argparse
 import json
@@ -53,17 +7,13 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # vendored annotators
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _vendor import annotators  # noqa: E402
 from _vendor.annotators import DisagreementRecord, flip  # noqa: E402
 
 OUT = REPO / "data" / "validation" / "annotator_consensus.json"
 VOTING_TOOLS = ("rnaview", "barnaba", "rnapolis", "bpnet")
 
-#: Clean-population definitions the leave-one-referee-out sweep is run over.
-#: ``clean`` is the definition used everywhere else in this file; the wider
-#: ``disjoint_candidates`` variant is reported alongside it so the robustness
-#: check does not silently depend on which one a reader assumed.
 LOO_DEFINITIONS = {
     "clean": (
         "single-candidate records whose PARSE candidate shares nothing with "
@@ -77,15 +27,6 @@ LOO_DEFINITIONS = {
 
 
 def verdict_of(hits: dict) -> str:
-    """Majority verdict over the votes cast by one record's referees.
-
-    Args:
-        hits: ``{tool: (hit_parse, hit_dssr)}`` for the referees covering
-            the record. A referee hitting both sides votes for both.
-
-    Returns:
-        ``"parse"``, ``"dssr"``, ``"tie"``, or ``"no_vote"`` (nobody voted).
-    """
     n_parse = sum(1 for hit_parse, _ in hits.values() if hit_parse)
     n_dssr = sum(1 for _, hit_dssr in hits.values() if hit_dssr)
     if not (n_parse or n_dssr):
@@ -96,19 +37,17 @@ def verdict_of(hits: dict) -> str:
 
 
 class Tallies:
-    """All consensus counters, filled record by record."""
-
     def __init__(self, referees: tuple[str, ...] = ()) -> None:
-        self.referees = referees   # full roster, for the leave-one-out sweep
+        self.referees = referees
         self.n_records = 0
-        self.degenerate = 0        # class records excluded (candidates ~ disputed)
-        self.class_votes = Counter()   # (population, panel_size, verdict)
-        self.loo_votes = Counter()     # (definition, dropped_referee, verdict)
-        self.reject_report = Counter()  # (panel_size, n_reporting)
-        self.ponly_report = Counter()   # (bucket, panel_size, n_reporting)
-        self.ponly_exact = Counter()    # (bucket, n_exact_class_matches)
-        self.per_tool = Counter()       # (bucket, tool, covered|reports|votes_*)
-        self.local_agree = Counter()    # fr3d_local vs published fr3d
+        self.degenerate = 0
+        self.class_votes = Counter()
+        self.loo_votes = Counter()
+        self.reject_report = Counter()
+        self.ponly_report = Counter()
+        self.ponly_exact = Counter()
+        self.per_tool = Counter()
+        self.local_agree = Counter()
 
     def add(self, r: DisagreementRecord, found: dict) -> None:
         if r.bucket == "rejected_by_parse":
@@ -152,13 +91,6 @@ class Tallies:
     def _add_leave_one_out(
         self, r: DisagreementRecord, dssr_side: set, clean: bool, hits: dict, verdict: str
     ) -> None:
-        """Re-tally the class-disagreement verdict with each referee dropped.
-
-        Run for the two clean-population definitions (see
-        ``LOO_DEFINITIONS``). The whole roster is swept, not just the
-        referees covering this record, so dropping a referee that does not
-        cover it is a no-op and every drop keeps the same denominator.
-        """
         disjoint = not set(r.parse_candidates) & dssr_side
         for definition, member in (("clean", clean), ("disjoint_candidates", disjoint)):
             if not member:
@@ -179,7 +111,6 @@ class Tallies:
 
 
 def load_available(requested: list[str]) -> dict[str, dict]:
-    """Load each requested JSON-backed tool that has an output file."""
     out = {}
     for tool in requested:
         try:
@@ -190,12 +121,10 @@ def load_available(requested: list[str]) -> dict[str, dict]:
 
 
 def real_classes(pairs: dict, r: DisagreementRecord) -> set:
-    """Canonical-direction classes for one record, near-pairs dropped."""
     return {c for c in annotators.lookup(pairs, r.res1, r.res2) if not c.startswith("n")}
 
 
 def fold(counter: Counter, keyfn) -> dict:
-    """Group a tuple-keyed counter by keyfn, sub-keyed by the last key field."""
     grouped: dict = defaultdict(Counter)
     for key, n in counter.items():
         grouped[keyfn(key)][key[-1]] += n
@@ -203,7 +132,6 @@ def fold(counter: Counter, keyfn) -> dict:
 
 
 def run(tools: dict[str, dict], fr3d: dict[str, dict], fr3d_local: dict | None) -> Tallies:
-    """One pass over every disagreement record, filling all tallies."""
     tallies = Tallies(referees=("fr3d", *tools))
     for r in annotators.disagreement_records():
         tallies.n_records += 1
@@ -224,13 +152,11 @@ def run(tools: dict[str, dict], fr3d: dict[str, dict], fr3d_local: dict | None) 
 
 
 def verdict_block(c: Counter) -> dict:
-    """Size, verdict breakdown, and PARSE:DSSR ratio for one verdict counter."""
     return {"n": sum(c.values()), "verdicts": dict(c),
             "parse_dssr_ratio": round(c["parse"] / c["dssr"], 2) if c["dssr"] else None}
 
 
 def population_blocks(class_votes: Counter) -> dict:
-    """Verdict tallies for clean / shared_candidate / pooled class records."""
     by_pop = fold(class_votes, lambda k: k[0])
     blocks = {}
     for pop in ("clean", "shared_candidate", "pooled"):
@@ -240,12 +166,6 @@ def population_blocks(class_votes: Counter) -> dict:
 
 
 def leave_one_out_blocks(loo_votes: Counter) -> dict:
-    """Class-disagreement verdict with each referee dropped, per clean definition.
-
-    Returns one block per definition in :data:`LOO_DEFINITIONS`: the
-    full-panel ``baseline``, a ``dropped`` block per referee left out, and
-    the min/max of the resulting PARSE:DSSR ratios.
-    """
     grouped = fold(loo_votes, lambda k: (k[0], k[1]))
     out = {}
     for definition, note in LOO_DEFINITIONS.items():

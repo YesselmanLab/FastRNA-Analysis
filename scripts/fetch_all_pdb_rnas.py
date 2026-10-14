@@ -1,18 +1,5 @@
 #!/usr/bin/env python
-"""Fetch a CSV of EVERY RNA-containing structure in the PDB (redundant included).
-
-Uses the public RCSB APIs - no clustering, so this is the full deposited set:
-  1. Search API: all entries with >= 1 RNA polymer entity.
-  2. Data API (GraphQL): batch-fetch per-entry metadata.
-
-Usage:
-    python fetch_all_pdb_rnas.py                 # contains RNA (incl. protein-RNA complexes)
-    python fetch_all_pdb_rnas.py --rna-only      # RNA-only (no protein entity)
-    python fetch_all_pdb_rnas.py -o all_pdb_rnas.csv
-
-Output columns: pdb_id, title, method, resolution, deposit_date, release_date,
-                n_rna_entities, polymer_composition, n_polymer_residues
-"""
+"""Fetch a CSV of EVERY RNA-containing structure in the PDB (redundant included)."""
 import argparse
 import csv
 import json
@@ -33,7 +20,6 @@ def _post(url, payload):
 
 
 def search_ids(rna_only: bool):
-    """Return all PDB IDs containing >=1 RNA entity (optionally RNA-only)."""
     rna_term = {
         "type": "terminal", "service": "text",
         "parameters": {

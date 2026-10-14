@@ -1,9 +1,4 @@
-"""Sequential, resumable runtime benchmark of all seven RNA annotators.
-
-Primary time is fresh-worker wall time, including its common Python launcher,
-tool startup/imports, required conversions, annotation, and output validation.
-No network access or cached annotations are used by the adapters.
-"""
+"""Sequential, resumable runtime benchmark of all seven RNA annotators."""
 import argparse
 from collections import defaultdict
 import csv
@@ -22,7 +17,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-TOOLS = ("parse", "parse_noscore", "dssr", "fr3d", "rnaview", "barnaba", "rnapolis", "bpnet")
+TOOLS = ("parse", "parse_noscore", "dssr", "fr3d", "rnaview", "barnaba", "rnapolis", "bpnet", "clarna")
 THREAD_ENV = {key: "1" for key in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
               "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "BLIS_NUM_THREADS")}
 
@@ -39,7 +34,6 @@ def write_json(path, data):
 
 
 def choose_structures(rows, limit, seed):
-    """Select before timing, balanced across four predeclared size strata."""
     if not limit or limit >= len(rows):
         return sorted(rows, key=lambda r: r["pdb"])
     if limit < 1:
@@ -60,7 +54,6 @@ def choose_structures(rows, limit, seed):
 
 
 def prepare_input(source, target):
-    """Keep the first deposited model, preserving mmCIF categories and coordinates."""
     import gemmi
     doc = gemmi.cif.read_file(str(source))
     block = doc.sole_block()
@@ -158,8 +151,6 @@ def run_trial(tool, row, repeat, args, output, config):
 def read_trials(path):
     if not path.exists():
         return []
-    # A power loss may leave a partial final append. Preserve it for inspection
-    # and rerun that trial; malformed complete records must still fail loudly.
     raw = path.read_bytes()
     if raw and not raw.endswith(b"\n"):
         end = raw.rfind(b"\n") + 1

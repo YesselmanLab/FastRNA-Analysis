@@ -1,16 +1,4 @@
-"""Time-reversal (RTM) control for the RE-SOLVED cohort.
-
-The PDB-REDO control (time_reversal_controls.py) can match pairs on res_id alone,
-because both models are the same entry re-refined. Here the two models are
-DIFFERENT PDB entries of the same molecule, so chains are renamed and only the
-chain pair recorded in resolve_strict.csv (cw in the worse entry, cb in the better
-one) is comparable. Pairs are matched within that chain on residue number AND base
-identity, in both orientations, so a numbering offset cannot silently align two
-different residues.
-
-Writes data/reference/resolved_again/resolve_pairs_matched.csv (the per-pair table
-this cohort never had) and data/validation/time_reversal_resolved.json.
-"""
+"""Time-reversal (RTM) control for the RE-SOLVED cohort."""
 import json
 import subprocess
 import sys
@@ -32,7 +20,6 @@ CUT = 80.0
 
 
 def scored_pairs(pdb: str) -> list[dict]:
-    """`parse <pdb> --details` -> the pairs that carry a score."""
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as fh:
         out = fh.name
     r = subprocess.run([_engine.find_engine(), *_engine.structure_args(pdb), "--details", "--out", out],
@@ -52,7 +39,6 @@ def scored_pairs(pdb: str) -> list[dict]:
 
 
 def _split(res_id: str):
-    """'A3-C-51' -> (chain, base, number); chain ids can contain '-'-free digits."""
     chain, base, num = res_id.rsplit("-", 2)
     return chain, base, num
 
@@ -97,7 +83,6 @@ def build_matched() -> pd.DataFrame:
               flush=True)
     df = pd.DataFrame(recs).drop_duplicates(
         subset=["rep", "worst", "best", "num1", "base1", "num2", "base2", "lw_class"])
-    # each pair was indexed in both orientations; keep one row per physical pair
     df["key"] = [tuple(sorted([(a, b), (c, d)])) + (lw,) for a, b, c, d, lw
                  in zip(df.num1, df.base1, df.num2, df.base2, df.lw_class)]
     df = df.drop_duplicates(subset=["rep", "worst", "best", "key"]).drop(columns="key")
@@ -129,7 +114,6 @@ def main(rebuild: bool = False):
     }
     ctl["n_flagged_in_both_models"] = int(((df.score_w < CUT) & (df.score_b < CUT)).sum())
     ctl["permutation_null"] = permutation_null(df, "rep", "score_w", "score_b", CUT)
-    # sensitivity: molecules whose two records barely agree behave like that null
     ctl["sensitivity_r_floor_0.2"] = paired_control(df, "rep", "score_w", "score_b",
                                                     CUT, r_floor=0.2)
     (ROOT / "data/validation/time_reversal_resolved.json").write_text(

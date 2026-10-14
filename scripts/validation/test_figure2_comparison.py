@@ -1,7 +1,4 @@
-"""Small, hand-counted regression cases for the publication benchmark.
-
-Run: python -m unittest discover -s scripts/validation -p 'test_figure2_comparison.py'
-"""
+"""Small, hand-counted regression cases for the publication benchmark."""
 import json
 from pathlib import Path
 import tempfile
@@ -24,7 +21,7 @@ class ComparisonTests(unittest.TestCase):
         candidates = [
             [*selected[0], "selected"], [*selected[1], "selected"],
             ["A", "10", "A", "20", "tWH", "competition"],
-            ["A", "50", "A", "60", "tWW", "ineligible"],  # unsupported prediction
+            ["A", "50", "A", "60", "tWW", "ineligible"],
             ["A", "70", "A", "80", "cWW|tWW", "stacking"],
             ["A", "90", "A", "100", None, "ineligible"],
             ["A", "110", "A", "120", "cWW", "invalid"],
@@ -37,8 +34,8 @@ class ComparisonTests(unittest.TestCase):
         })
         write("dssr_pairs.json", {"P1": {"status": "ok", "pairs": [
             ["A", "1", "A", "4", "cWW"], ["A", "10", "A", "20", "tWH"],
-            ["A", "30", "A", "40", "cWH"],  # detected, but class disagrees
-            ["A", "70", "A", "80", "tWW"],  # same unresolved-label mask at both stages
+            ["A", "30", "A", "40", "cWH"],
+            ["A", "70", "A", "80", "tWW"],
         ]}})
         write("barnaba_pairs.json", {"P1": {"status": "ok", "pairs": []}})
         write("residue_names.json", {"P1": {"A|1|": "G", "A|4|": "C"}})
@@ -50,7 +47,6 @@ class ComparisonTests(unittest.TestCase):
         self.c.detection_counts("parse", "barnaba")
         self.assertEqual(self.c.identified["P1"], original)
         self.assertEqual(len(original), 5)
-        # Unsupported tWW call remains, and costs precision.
         self.assertEqual(self.c.metrics("identified")["tWW"]["total_python"], 1)
         self.assertEqual(self.c.metrics("identified")["tWW"]["prec_cls"], 0)
 

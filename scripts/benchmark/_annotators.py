@@ -1,10 +1,4 @@
-"""Offline runtime adapters, adapted from the project's archived annotator runner.
-
-Retains its chain aliases, grouped runs, output validation, and residue mapping.
-All inputs come from LOCAL_CIFS; barnaba always uses those same coordinates via
-synthetic PDB conversion. No download or annotation-result cache is consulted.
-Installation paths are configured by run_one.py in each fresh worker.
-"""
+"""Offline runtime adapters, adapted from the project's archived annotator runner."""
 import argparse
 import json
 import math
@@ -30,7 +24,6 @@ RV_LINE = re.compile(
     r"^\s*\S+,\s+(\S+):\s+(-?\d+\w?)\s+(\S)-(\S)\s+(-?\d+\w?)\s+(\S+):\s+(\S)/(\S)\s+(cis|tran)"
 )
 
-#: Single-char chain aliases RNAView can carry through its .out format.
 ALIAS_POOL = string.ascii_uppercase + string.digits + string.ascii_lowercase
 
 
@@ -48,11 +41,10 @@ def get_cif(pdb: str, workdir: Path) -> Path | None:
 
 
 class TooManyChains(Exception):
-    """More nucleic chains than single-char aliases; RNAView cannot cover."""
+    pass
 
 
 def _atom_site_tags(lines: list[str]) -> list[str]:
-    """The _atom_site column names, in loop order."""
     tags: list[str] = []
     for line in lines:
         if line.startswith("_atom_site."):
@@ -63,7 +55,6 @@ def _atom_site_tags(lines: list[str]) -> list[str]:
 
 
 def _atom_site_scan(lines: list[str]) -> tuple[int, int, list[str], set[str]]:
-    """(auth_asym col, label_atom col, all chains in row order, nucleic chains)."""
     tags = _atom_site_tags(lines)
     chains: list[str] = []
     nucleic: set[str] = set()
@@ -83,11 +74,6 @@ def _atom_site_scan(lines: list[str]) -> tuple[int, int, list[str], set[str]]:
 
 
 def _build_alias(chains: list[str], nucleic: set[str]) -> dict[str, str]:
-    """Injective single-char aliases; nucleic chains have priority on the pool.
-
-    Non-nucleic chains beyond the pool share one overflow char that is never
-    a nucleic alias (they cannot appear in base-pair output).
-    """
     used: set[str] = set()
     alias: dict[str, str] = {}
     for group in (sorted(nucleic), [c for c in chains if c not in nucleic]):
@@ -107,13 +93,6 @@ def _build_alias(chains: list[str], nucleic: set[str]) -> dict[str, str]:
 
 
 def chain_groups(names: list[str], size: int = len(ALIAS_POOL)) -> list[list[str]]:
-    """Chain groups of <= size such that every PAIR of names shares a group.
-
-    One group when everything fits the alias pool; otherwise names are
-    partitioned into blocks of size//2 and every pair of blocks becomes one
-    group, so any two chains co-occur in the group joining their blocks.
-    The covering property is verified programmatically and raises if broken.
-    """
     if len(names) <= size:
         return [list(names)]
     half = size // 2
@@ -128,12 +107,10 @@ def chain_groups(names: list[str], size: int = len(ALIAS_POOL)) -> list[list[str
 
 
 def _flip_lw(lw: str | None) -> str | None:
-    """LW label as seen from the other residue (cWS -> cSW)."""
     return lw if lw is None or len(lw) != 3 else lw[0] + lw[2] + lw[1]
 
 
 def _dedupe_pairs(pairs: list[list]) -> list[list]:
-    """Drop duplicate rows across group runs, on order-normalized keys."""
     seen = set()
     out = []
     for c1, n1, c2, n2, lw in pairs:
@@ -148,14 +125,6 @@ def _dedupe_pairs(pairs: list[list]) -> list[list]:
 
 
 def alias_cif_chains(text: str) -> tuple[str, dict[str, str]] | None:
-    """Rewrite auth_asym_id to single-char aliases; None if not needed.
-
-    Returns (rewritten cif text, reverse map alias -> original chain).
-
-    Raises:
-        TooManyChains: If the nucleic chains alone exceed the alias pool.
-        ValueError: If an atom_site row cannot be tokenized cleanly.
-    """
     lines = text.splitlines()
     auth_i, _atom_i, chains, nucleic = _atom_site_scan(lines)
     if auth_i < 0 or all(len(c) == 1 for c in chains):
@@ -173,19 +142,11 @@ def alias_cif_chains(text: str) -> tuple[str, dict[str, str]] | None:
     return "\n".join(out) + "\n", reverse
 
 
-#: Ring atoms RNAView uses to recognise a nucleotide, and its distance cutoffs.
 NT_RING = ("N1", "C2", "C6")
 NT_CUTOFFS = ((0, 1, 2.0), (0, 2, 2.0), (1, 2, 3.0))
 
 
 def _rnaview_nucleotides(lines: list[str], cols: dict[str, int]) -> list[tuple]:
-    """Residue keys RNAView calls a nucleotide, in file order.
-
-    Mirrors residue_ident() in RNAView's fpair_sub.c: a residue is a base when
-    it carries N1, C2 and C6 with d(N1,C2) <= 2.0, d(N1,C6) <= 2.0 and
-    d(C2,C6) <= 3.0 — a purely geometric test that also accepts ligands with a
-    pyridine ring such as LLP (pyridoxal-lysine).
-    """
     order: list[tuple] = []
     ring: dict[tuple, dict[str, tuple[float, float, float]]] = {}
     for line in lines:
@@ -213,19 +174,6 @@ def _rnaview_nucleotides(lines: list[str], cols: dict[str, int]) -> list[tuple]:
 
 
 def drop_lone_nucleotides(text: str) -> str | None:
-    """The cif without residues RNAView sees as a one-nucleotide chain.
-
-    RNAView strips every chain left holding a single nucleotide ("rid of
-    ligand", rnaview.c:800) and rebuilds its residue table, but does NOT
-    rebuild chain_idx; rna_dna_bb_angle() then indexes the shortened table
-    through the stale chain_idx and segfaults (4NIA, 5X6B, 6YL5, 7PD3, 7M2T).
-    Removing those residues from the input cannot change the base pairs
-    RNAView reports, because RNAView itself discards them before any pairing
-    analysis runs. Chains are RNAView's own: maximal runs of one auth_asym_id
-    over the nucleotide residues in file order; removal is iterated because
-    dropping a run can merge its neighbours. Returns None when nothing to
-    drop (no second attempt is warranted).
-    """
     lines = text.splitlines()
     tags = _atom_site_tags(lines)
     needed = ("auth_asym_id", "auth_seq_id", "auth_comp_id", "pdbx_PDB_ins_code",
@@ -264,7 +212,6 @@ def _residue_key(line: str, cols: dict[str, int]) -> tuple:
 
 
 def _parse_rnaview_out(text: str, reverse: dict[str, str] | None) -> list[list]:
-    """Extract [chain1, num1, chain2, num2, lw] rows from an RNAView .out."""
     pairs, in_bp = [], False
     for line in text.splitlines():
         if line.startswith("BEGIN_base-pair"):
@@ -283,30 +230,15 @@ def _parse_rnaview_out(text: str, reverse: dict[str, str] | None) -> list[list]:
         elif e1 in "WHS" and e2 in "WHS":
             lw = ("c" if ct == "cis" else "t") + e1 + e2
         else:
-            lw = None  # '.', '?' unidentified edge: detected, unclassified
+            lw = None
         c1, c2 = c1.rstrip(":"), c2.rstrip(":")
         if reverse is not None:
-            c1, c2 = reverse[c1], reverse[c2]  # KeyError = alias leak, fail loudly
+            c1, c2 = reverse[c1], reverse[c2]
         pairs.append([c1, n1, c2, n2, lw])
     return pairs
 
 
 def _run_rnaview(work: Path, target: Path) -> tuple[str | None, str, bool]:
-    """(RNAView .out text or None, status, died-by-signal); output is judged, not exit code.
-
-    RNAView frees its residue table with stale bounds and so segfaults during
-    exit cleanup on large structures LONG AFTER writing complete results;
-    exit status alone therefore separates nothing. Completeness is read off
-    the file instead: RNAView always closes the pair block with END_base-pair,
-    including when it found zero pairs, so
-
-      - no file, or an empty one  -> fail_rnaview_crash (died before output)
-      - file without END_base-pair -> fail_rnaview_truncated (died mid-write)
-      - END_base-pair present      -> ok, whatever the exit status
-
-    An ok result that died by signal is flagged so the dirty exit is never
-    silent.
-    """
     try:
         proc = subprocess.run(
             [str(RNAVIEW_BIN), "--cif", target.name],
@@ -326,7 +258,6 @@ def _run_rnaview(work: Path, target: Path) -> tuple[str | None, str, bool]:
 
 
 def _group_cif(lines: list[str], auth_i: int, alias: dict[str, str]) -> str:
-    """The cif restricted to the aliased chains (all other chains dropped)."""
     out = []
     for line in lines:
         if line.startswith(("ATOM", "HETATM")):
@@ -341,7 +272,6 @@ def _group_cif(lines: list[str], auth_i: int, alias: dict[str, str]) -> str:
 
 def _rnaview_group_pass(pdb: str, lines: list[str], auth_i: int, names: list[str],
                         size: int, work: Path) -> tuple[list[list], bool] | None:
-    """One covering pass at a given group size; None if any group run failed."""
     pairs: list[list] = []
     signalled = False
     for g, group in enumerate(chain_groups(names, size)):
@@ -357,7 +287,6 @@ def _rnaview_group_pass(pdb: str, lines: list[str], auth_i: int, names: list[str
 
 
 def _ok_record(via: str | None, pairs: list[list], signalled: bool = False) -> dict:
-    """An ok result, tagging the non-default route and any dirty exit."""
     record: dict = {"status": "ok"}
     if via is not None:
         record["via"] = via
@@ -368,12 +297,6 @@ def _ok_record(via: str | None, pairs: list[list], signalled: bool = False) -> d
 
 
 def _rnaview_grouped(pdb: str, text: str, work: Path, via: str | None) -> tuple[str, dict]:
-    """Overlapping chain-group runs for structures beyond the alias pool.
-
-    RNAView segfaults on some chain subsets; a pass with any failed group is
-    retried whole with half the group size, down to pairwise runs (size 3
-    makes blocks of 1, i.e. every pair of chains its own run).
-    """
     lines = text.splitlines()
     auth_i, _atom_i, _chains, nucleic = _atom_site_scan(lines)
     tag = "cif_groups" if via is None else f"{via}_cif_groups"
@@ -392,7 +315,6 @@ def _rnaview_grouped(pdb: str, text: str, work: Path, via: str | None) -> tuple[
 
 def _rnaview_attempt(pdb: str, cif: Path, text: str, work: Path,
                      via: str | None) -> tuple[str, dict]:
-    """One RNAView run of `text` (the verbatim cif when `via` is None)."""
     target = work / f"{pdb}.cif"
     try:
         aliased = alias_cif_chains(text)
@@ -420,11 +342,6 @@ def _rnaview_attempt(pdb: str, cif: Path, text: str, work: Path,
 
 
 def rnaview_one(pdb: str) -> tuple[str, dict]:
-    """RNAView on the cif, retried without RNAView's own lone-nucleotide bug.
-
-    A crash on the verbatim file is retried on the file with lone-nucleotide
-    chains removed (drop_lone_nucleotides); that route is recorded in "via".
-    """
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
         cif = get_cif(pdb, work)
@@ -444,7 +361,6 @@ BARNABA_LW = {"WC": "cWW", "GU": "cWW"}
 
 
 def _barnaba_lw(ann: str) -> str | None:
-    """barnaba annotation string -> canonical LW label (None if unclassified)."""
     if ann[:2] in BARNABA_LW:
         return BARNABA_LW[ann[:2]]
     if len(ann) == 3 and ann[0] in "WHS" and ann[1] in "WHS" and ann[2] in "ct":
@@ -453,7 +369,6 @@ def _barnaba_lw(ann: str) -> str | None:
 
 
 def _barnaba_rows(chain_ids: list[str], pairings: list, res: list) -> list[list]:
-    """[chain, num, chain, num, lw] rows from one bb.annotate() result."""
     rows = []
     for (i, j), ann in zip(*pairings[0], strict=True):
         _b1, n1, ci1 = res[i].rsplit("_", 2)
@@ -468,7 +383,6 @@ def barnaba_one(pdb: str) -> tuple[str, dict]:
 
 
 def _synth_atom_line(serial: int, at, chain: str, resfield: str, num: int, icode: str) -> str:
-    """One fixed-column ATOM record; serials wrap modulo the 5-digit field."""
     aname = at.name if len(at.name) == 4 else f" {at.name:<3}"
     alt = at.altloc if at.altloc and at.altloc != "\x00" else " "
     element = at.element.name.rjust(2)[:2]
@@ -481,12 +395,6 @@ def _synth_atom_line(serial: int, at, chain: str, resfield: str, num: int, icode
 
 
 def _write_synth_pdb(path: Path, chains: list, alias: dict[str, str]) -> dict[str, dict[int, str]]:
-    """Write a nucleic-only synthetic PDB; returns per-alias renumber maps.
-
-    Chains whose residue numbers overflow the 4-column field are renumbered
-    1..n and the map (alias chain -> {new: original number string}) returned
-    so parsed output can be mapped back.
-    """
     num_maps: dict[str, dict[int, str]] = {}
     serial = 0
     with path.open("w") as fh:
@@ -512,7 +420,6 @@ def _write_synth_pdb(path: Path, chains: list, alias: dict[str, str]) -> dict[st
 
 
 def _nucleic_chain_residues(cif: Path) -> list:
-    """[(auth chain name, [gemmi residues with a C1' atom])] for model 1."""
     import gemmi
 
     structure = gemmi.read_structure(str(cif))
@@ -525,7 +432,6 @@ def _nucleic_chain_residues(cif: Path) -> list:
 
 
 def _map_back(row: list, reverse: dict[str, str], num_maps: dict) -> list:
-    """Alias-chain row -> original ids; unmappable ids raise (KeyError)."""
     ca1, n1, ca2, n2, lw = row
     if ca1 in num_maps:
         n1 = num_maps[ca1][int(n1)]
@@ -535,7 +441,6 @@ def _map_back(row: list, reverse: dict[str, str], num_maps: dict) -> list:
 
 
 def _barnaba_rescue(pdb: str) -> tuple[str, dict]:
-    """barnaba on synthetic PDB(s) built from the local mmCIF with gemmi."""
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
         cif = get_cif(pdb, work)
@@ -571,7 +476,6 @@ def _barnaba_rescue(pdb: str) -> tuple[str, dict]:
 
 
 def _rnapolis_num(nt) -> str:
-    """Residue number with any insertion code appended ('34L')."""
     icode = nt.icode or ""
     return f"{nt.number}{'' if icode in ('', '?') else icode.strip()}"
 
@@ -608,7 +512,6 @@ BPNET_SYSFILES = Path.home() / "local" / "installs" / "bpnet" / "sysfiles"
 
 
 def _bpnet_num(num: str, ins: str) -> str:
-    """Residue number with bpnet's PDB_ins_code column appended ('?' = none)."""
     return num if ins == "?" else f"{num}{ins}"
 
 
@@ -636,15 +539,11 @@ def bpnet_one(pdb: str) -> tuple[str, dict]:
 
 
 def _parse_bpnet_out(text: str) -> list[list]:
-    """Extract [chain1, num1, chain2, num2, lw] rows from a bpnet .out file."""
     pairs = []
     for line in text.splitlines():
         if line.startswith("#"):
             continue
         tok = line.split()
-        # self = 5 tokens (serial, resnum, name, ins, chain); then one or
-        # more partner chunks of 8 (serial, resnum, name, ins, chain,
-        # edge:edge+CT, BP|TP, evalue)
         if len(tok) < 13:
             continue
         n1, c1 = _bpnet_num(tok[1], tok[3]), tok[4]
@@ -664,7 +563,6 @@ def _parse_bpnet_out(text: str) -> list[list]:
 
 
 def fr3d_local_one(pdb: str) -> tuple[str, dict]:
-    """Local, version-pinned FR3D-Python annotation on the supplied mmCIF."""
     import sys
 
     with tempfile.TemporaryDirectory() as td:
@@ -699,7 +597,7 @@ def fr3d_local_one(pdb: str) -> tuple[str, dict]:
                 lw = "n" + lw[1] + lw[2:].upper()
             elif len(lw) == 3:
                 lw = lw[0] + lw[1:].upper()
-            n1 = f1[4] + (f1[7] if len(f1) >= 8 else "")  # unit-id field 8 = icode
+            n1 = f1[4] + (f1[7] if len(f1) >= 8 else "")
             n2 = f2[4] + (f2[7] if len(f2) >= 8 else "")
             pairs.append([f1[2], n1, f2[2], n2, lw])
         return pdb, {"status": "ok", "pairs": pairs}

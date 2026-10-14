@@ -1,23 +1,5 @@
 #!/usr/bin/env python
-"""Download the mmCIF files the analysis runs on into data/structures/.
-
-The PARSE engine downloads structures by PDB id on its own, but the other tools
-in the tool comparison and the runtime benchmark (DSSR, FR3D, RNAView, barnaba,
-RNApolis, BPNET) read local files. This fetches them from RCSB once, so every
-script reads the same copies from data/structures/<ID>.cif.
-
-Usage (from the repo root):
-    python scripts/fetch_structures.py              # the 2,697 non-redundant RNAs
-    python scripts/fetch_structures.py --all        # every RNA entry in the PDB (~10k)
-    python scripts/fetch_structures.py --ids 1GID,1EHZ
-
-The non-redundant set is `unique_pdb_id` in
-data/reference/reference_sets/uniqueRNAS.csv; --all uses `pdb_id` in
-all_pdb_rnas.csv (regenerate that list with scripts/fetch_all_pdb_rnas.py).
-Files already present are skipped, so an interrupted run can simply be repeated.
-RCSB occasionally re-issues an entry, so a fresh download may differ slightly from
-an older copy; the benchmark records each file's checksum.
-"""
+"""Download the mmCIF files the analysis runs on into data/structures/."""
 import argparse
 import csv
 from concurrent.futures import ThreadPoolExecutor
@@ -40,7 +22,6 @@ def read_ids(path, column):
 
 
 def fetch(pdb, out, retries=3):
-    """Download one entry; returns (id, 'ok' | 'present' | error text)."""
     target = out / f"{pdb}.cif"
     if target.exists() and target.stat().st_size > 0:
         return pdb, "present"
@@ -51,10 +32,10 @@ def fetch(pdb, out, retries=3):
                 part.write_bytes(response.read())
             if not part.read_bytes()[:5] == b"data_":
                 raise ValueError("not an mmCIF file")
-            part.replace(target)           # never leaves a half-written <ID>.cif
+            part.replace(target)
             return pdb, "ok"
         except urllib.error.HTTPError as error:
-            if error.code == 404:          # obsolete or withdrawn: retrying won't help
+            if error.code == 404:
                 part.unlink(missing_ok=True)
                 return pdb, "not found (404)"
             last = f"HTTP {error.code}"

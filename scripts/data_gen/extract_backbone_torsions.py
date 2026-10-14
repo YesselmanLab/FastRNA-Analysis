@@ -1,18 +1,4 @@
-"""Extract per-residue backbone suites for EVERY classifiable residue (paired +
-unpaired) in the high-quality reference set.
-
-Unlike extract_pair_features.py (one torsion row per residue-in-a-pair), this
-walks every residue with a valid 7D suite in each structure, so the
-per-conformer torsion distributions (build_backbone_distributions.py) represent
-loops/junctions - where backbone errors concentrate - not just helical context.
-
-Runs the PARSE C++ engine (`parse --details`) and reads its top-level
-`backbone_torsions` array. The engine downloads each mmCIF itself (see
-_engine.py).
-
-Output: data/reference/high_quality_features/torsions_all.csv
-    pdb_id, res_id, base_type, alpha..zeta, conformer, suiteness, suite_bin, is_outlier
-"""
+"""Extract per-residue backbone suites for EVERY classifiable residue (paired + unpaired) in the high-quality reference set."""
 
 from __future__ import annotations
 

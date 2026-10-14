@@ -1,24 +1,4 @@
-"""Build per-(bp_type, edge_type, parameter) reference distributions.
-
-Reads the three feature tables produced by extract_pair_features.py and emits
-
-    data/reference/parameter_distributions.json
-
-For each parameter consumed by the runtime scorer, computes per-cell:
-  - weighted_median       M̂         weighted by 1 / (same-PDB count in cell)
-  - weighted_d1, d9                  10th / 90th percentiles
-  - scale_factor_upper    (d9 − M̂) / Φ⁻¹(0.9)        - Z' upper scale
-  - scale_factor_lower    (M̂ − d1) / |Φ⁻¹(0.1)|      - Z' lower scale
-  - n_observations, n_effective, n_pdbs
-
-The output JSON includes fallback pools so the runtime can degrade to
-broader data when a specific cell is sparse:
-  bp_type/edge_type    primary cell        e.g. "G-C/cWW"
-  _ANY/edge_type       pooled across bp_types
-  _ANY/_ANY            global pool
-
-Reference: Černý et al. 2026, NAR gkaf1335 - defines Z'.
-"""
+"""Build per-(bp_type, edge_type, parameter) reference distributions."""
 
 import argparse
 import datetime
@@ -39,34 +19,23 @@ DEFAULT_FEATURES_DIR = REPO_ROOT / "data" / "reference" / "high_quality_features
 DEFAULT_OUTPUT = (REPO_ROOT / "data" / "reference" / "scoring_tables"
                   / "parameter_distributions.json")
 
-# Z' transform constants (paper Eq. 1)
-PROBIT_90 = float(stats.norm.ppf(0.9))   # ≈ +1.2816
+PROBIT_90 = float(stats.norm.ppf(0.9))
 ABS_PROBIT_10 = abs(float(stats.norm.ppf(0.1)))
 
-# Parameters that get Z' tables - must mirror what the runtime scorer reads.
 PARAMETERS = {
     "pairs":  ["shear", "stretch", "stagger", "buckle", "propeller", "opening"],
     "hbonds": ["distance", "donor_angle", "acceptor_angle"],
 }
 
-# Categorical columns that get per-cell weighted frequency tables.
 CATEGORICAL_COLUMNS = ["conformer"]
 
 
 def canonicalize_dataframe(df: pd.DataFrame, source: str) -> pd.DataFrame:
-    """Rewrite bp_type into canonical (alphabetical) order for self-reciprocal
-    LW classes, flipping the sign of orientation-dependent pair-geometry
-    parameters when a swap occurs.
-
-    Returns a new DataFrame; the input is not mutated. ``source`` selects
-    which sign-flip set applies - only "pairs" carries shear/stagger/buckle.
-    """
     if "lw_class" not in df.columns or "bp_type" not in df.columns:
         return df
     df = df.copy()
     bp = df["bp_type"].astype(str)
     parts = bp.str.split("-", n=1, expand=True)
-    # Rows that should be swapped: self-reciprocal LW + bp has a dash + left > right
     needs_swap = (
         df["lw_class"].isin(SELF_RECIPROCAL_LW)
         & bp.str.contains("-", regex=False)
@@ -85,16 +54,6 @@ def canonicalize_dataframe(df: pd.DataFrame, source: str) -> pd.DataFrame:
 
 
 def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
-    """Weighted quantile via cumulative-weight interpolation.
-
-    Args:
-        values: 1-D array of observations.
-        weights: matching weights (positive).
-        q: quantile in [0, 1].
-
-    Returns:
-        The interpolated value at quantile q. Returns nan for empty input.
-    """
     if values.size == 0:
         return float("nan")
     order = np.argsort(values)
@@ -104,25 +63,16 @@ def weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> floa
     total = cum[-1]
     if total <= 0:
         return float("nan")
-    # Cumulative midpoints: paper-style "weighted percentile" uses (cum - w/2) / total
     p = (cum - w / 2.0) / total
-    # Clamp q to the supported range, then linear-interpolate
     return float(np.interp(q, p, v))
 
 
 def per_pdb_weights(pdb_ids: pd.Series) -> np.ndarray:
-    """Per-PDB downweighting: each obs gets weight 1 / (count of same-PDB obs in this cell).
-
-    Sum of weights across all obs from one PDB == 1, so a PDB contributes at
-    most one effective sample regardless of how many pairs it has in the cell.
-    Used by Černý et al. 2026 to fight ribosome / homolog dominance.
-    """
     counts = pdb_ids.value_counts()
     return np.array([1.0 / counts[pdb_id] for pdb_id in pdb_ids])
 
 
 def cell_distribution(values: np.ndarray, weights: np.ndarray, pdb_ids: pd.Series) -> dict:
-    """Compute Z' parameters for one cell × one parameter."""
     mask = ~np.isnan(values)
     values = values[mask]
     weights = weights[mask]
@@ -148,7 +98,6 @@ def cell_distribution(values: np.ndarray, weights: np.ndarray, pdb_ids: pd.Serie
     base["weighted_median"] = round(median, 4)
     base["weighted_d1"] = round(d1, 4)
     base["weighted_d9"] = round(d9, 4)
-    # Degenerate cells (zero spread): scales stay None so the scorer skips them.
     if scale_upper > 0 and scale_lower > 0:
         base["scale_factor_upper"] = round(scale_upper, 5)
         base["scale_factor_lower"] = round(scale_lower, 5)
@@ -156,16 +105,6 @@ def cell_distribution(values: np.ndarray, weights: np.ndarray, pdb_ids: pd.Serie
 
 
 def categorical_cell(values: pd.Series, weights: np.ndarray) -> dict:
-    """Compute weighted frequency table for a categorical column in one cell.
-
-    Returns
-    -------
-    dict with::
-        n_observations:     raw count (excluding NaN)
-        n_effective:        Σ weights
-        n_pdbs:             distinct PDB count (computed by caller via .name path)
-        frequencies:        {category_value: weighted_fraction}, sorted desc
-    """
     mask = values.notna()
     v = values[mask].to_numpy()
     w = weights[mask]
@@ -180,7 +119,6 @@ def categorical_cell(values: pd.Series, weights: np.ndarray) -> dict:
     for cat in pd.unique(v):
         cat_weight = float(w[v == cat].sum())
         freqs[str(cat)] = round(cat_weight / total_weight, 4)
-    # Sort by frequency descending so the dominant category is first.
     freqs = dict(sorted(freqs.items(), key=lambda kv: -kv[1]))
     return {
         "n_observations": int(v.size),
@@ -190,14 +128,8 @@ def categorical_cell(values: pd.Series, weights: np.ndarray) -> dict:
 
 
 def build_categorical_for_dataframe(df: pd.DataFrame, columns: list[str]) -> dict:
-    """Build per-(bp_type, lw_class) weighted frequency tables.
-
-    Mirrors the cell + fallback layout used by build_for_dataframe so the
-    runtime scorer walks the same hierarchy.
-    """
     out: dict[str, dict[str, dict]] = {c: {} for c in columns}
 
-    # Primary cells: every observed (bp_type, lw_class) combination
     for (bp_type, lw_class), group in df.groupby(["bp_type", "lw_class"]):
         weights = per_pdb_weights(group["pdb_id"])
         n_pdbs = group["pdb_id"].nunique()
@@ -207,7 +139,6 @@ def build_categorical_for_dataframe(df: pd.DataFrame, columns: list[str]) -> dic
             entry["n_pdbs"] = int(n_pdbs)
             out[c][key] = entry
 
-    # Edge-only pool
     for lw_class, group in df.groupby("lw_class"):
         weights = per_pdb_weights(group["pdb_id"])
         n_pdbs = group["pdb_id"].nunique()
@@ -217,7 +148,6 @@ def build_categorical_for_dataframe(df: pd.DataFrame, columns: list[str]) -> dic
             entry["n_pdbs"] = int(n_pdbs)
             out[c][key] = entry
 
-    # Global pool
     weights = per_pdb_weights(df["pdb_id"])
     n_pdbs = df["pdb_id"].nunique()
     for c in columns:
@@ -229,16 +159,8 @@ def build_categorical_for_dataframe(df: pd.DataFrame, columns: list[str]) -> dic
 
 
 def build_for_dataframe(df: pd.DataFrame, parameters: list[str]) -> dict:
-    """Build the cell × parameter distribution table for one DataFrame.
-
-    Returns a nested dict::
-        {parameter_name: {"bp_type/edge_type": {z_prime_fields...}, ...}}
-
-    Includes _ANY/edge_type pools and a global _ANY/_ANY pool for fallback.
-    """
     out: dict[str, dict[str, dict]] = {p: {} for p in parameters}
 
-    # Primary cells: every observed (bp_type, lw_class) combination
     for (bp_type, lw_class), group in df.groupby(["bp_type", "lw_class"]):
         weights = per_pdb_weights(group["pdb_id"])
         key = f"{bp_type}/{lw_class}"
@@ -249,7 +171,6 @@ def build_for_dataframe(df: pd.DataFrame, parameters: list[str]) -> dict:
                 group["pdb_id"].reset_index(drop=True),
             )
 
-    # Edge-only pool: pool across all bp_types per LW class
     for lw_class, group in df.groupby("lw_class"):
         weights = per_pdb_weights(group["pdb_id"])
         key = f"_ANY/{lw_class}"
@@ -260,7 +181,6 @@ def build_for_dataframe(df: pd.DataFrame, parameters: list[str]) -> dict:
                 group["pdb_id"].reset_index(drop=True),
             )
 
-    # Global pool: everything
     weights = per_pdb_weights(df["pdb_id"])
     for p in parameters:
         out[p]["_ANY/_ANY"] = cell_distribution(
@@ -299,9 +219,6 @@ def main() -> None:
     print("Building categorical frequency tables for backbone...")
     categorical_distributions = {
         "torsions": build_categorical_for_dataframe(torsions_df, CATEGORICAL_COLUMNS),
-        # H-bond count is integer-valued and discrete: treat as categorical
-        # so the runtime scorer can flag pairs whose count is in the rare
-        # tail for their cell.
         "pairs": build_categorical_for_dataframe(pairs_df, ["num_base_hbonds"]),
     }
 
@@ -329,7 +246,6 @@ def main() -> None:
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
-    # Summary stats
     print(f"\nWrote {args.output}")
     for source, params in z_prime_distributions.items():
         n_cells = len(next(iter(params.values()))) if params else 0
@@ -340,10 +256,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-# Usage:
-#   python3.12 scripts/reference/build_distributions.py
-#   python3.12 scripts/reference/build_distributions.py \
-#       --features-dir data/reference/features_strict \
-#       --output       data/reference/parameter_distributions_strict.json

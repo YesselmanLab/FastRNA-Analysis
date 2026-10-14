@@ -1,28 +1,4 @@
-"""Referee votes on FastRNA-DSSR class conflicts, restricted to the conflicts that
-Supplementary Figure S2A also counts.
-
-Every class conflict is filed twice in the differences inventory
-(data/comparison/{class}.json): once under DSSR's class, as
-``python_assigns:<FastRNA class>``, and once under FastRNA's class, as
-``dssr_assigns:<DSSR class>``. The published referee tally in
-validation/annotator_consensus.json votes on the first form (15,356 records);
-S2A counts the second form with DSSR's incomplete classes (a '.' edge) dropped
-(11,756). The two overlap in 10,194 pairs: the rest are mostly FastRNA's ambiguous
-X|Y calls, whose label is not one of the 12 class names and so is never filed
-under a FastRNA class. This script re-runs the same vote on the shared 10,194, so
-S2A and S2B describe the same conflicts.
-
-The vote is the one in adjudicate_consensus.py (class_disagreement branch), on
-_vendor/annotators.py: direction-agnostic; a referee class equal to the disputed
-DSSR class or its flip counts for DSSR, one equal to a remaining FastRNA candidate
-counts for FastRNA; records whose every FastRNA candidate is direction-equivalent
-to the disputed class are degenerate and excluded. Before writing anything the
-script re-runs the full population and refuses to continue unless it reproduces
-annotator_consensus.json exactly.
-
-Writes data/validation/annotator_consensus_shared.json. The original
-annotator_consensus.json is not touched (Supplementary Figure S2D also reads it).
-"""
+"""Referee votes on FastRNA-DSSR class conflicts, restricted to the conflicts that Supplementary Figure S2A also counts."""
 import json
 import sys
 from collections import Counter
@@ -38,8 +14,6 @@ OUT = ROOT / "data" / "validation" / "annotator_consensus_shared.json"
 
 
 def s1a_conflicts():
-    """Pairs S2A counts as a class conflict: filed under FastRNA's class with a
-    complete DSSR class (no '.' edge)."""
     keys = set()
     for lw in annotators.loaders.LW_COMPARISON_CLASSES:
         rows = json.loads(annotators.paths.data_file(f"comparison/{lw}.json").read_text())
@@ -53,8 +27,6 @@ def s1a_conflicts():
 
 
 def class_records(keep=None):
-    """Deduplicated class-disagreement records, as annotators.disagreement_records
-    yields them, optionally restricted to the pair keys in ``keep``."""
     seen = set()
     for lw in annotators.loaders.LW_COMPARISON_CLASSES:
         rows = json.loads(annotators.paths.data_file(f"comparison/{lw}.json").read_text())
@@ -72,7 +44,7 @@ def class_records(keep=None):
 
 
 def tally(records, panels_by_tool):
-    per_tool, degenerate, n = Counter(), 0, 0
+    per_tool, per_pdb, degenerate, n = Counter(), Counter(), 0, 0
     for r in records:
         found = {t: {c for c in annotators.lookup(p[r.pdb_id], r.res1, r.res2)
                      if not c.startswith("n")}
@@ -87,19 +59,26 @@ def tally(records, panels_by_tool):
         dssr_side, parse_side = sides
         for tool, classes in found.items():
             per_tool[(tool, "covered")] += 1
+            per_pdb[(tool, r.pdb_id, "covered")] += 1
             if classes & parse_side:
                 per_tool[(tool, "votes_parse")] += 1
+                per_pdb[(tool, r.pdb_id, "votes_parse")] += 1
             if classes & dssr_side:
                 per_tool[(tool, "votes_dssr")] += 1
-    return {t: {k: per_tool[(t, k)] for k in ("covered", "votes_parse", "votes_dssr")}
-            for t in REFEREES}, degenerate, n
+                per_pdb[(tool, r.pdb_id, "votes_dssr")] += 1
+    keys = ("covered", "votes_parse", "votes_dssr")
+    by_structure = {t: {pdb: [per_pdb[(t, pdb, k)] for k in keys]
+                        for pdb in sorted({p for (tt, p, _) in per_pdb if tt == t})}
+                    for t in REFEREES}
+    return ({t: {k: per_tool[(t, k)] for k in keys} for t in REFEREES},
+            degenerate, n, by_structure)
 
 
 def main():
     panels = {"fr3d": annotators.fr3d_pairs(),
               **{t: annotators.tool_pairs(t) for t in VOTING_TOOLS}}
 
-    full, _, _ = tally(class_records(), panels)
+    full, _, _, _ = tally(class_records(), panels)
     published = json.loads((ROOT / "data/validation/annotator_consensus.json").read_text())
     pub = published["per_annotator"]
     for t in REFEREES:
@@ -111,7 +90,7 @@ def main():
     print("full population reproduces annotator_consensus.json exactly")
 
     keep = s1a_conflicts()
-    shared, degenerate, n = tally(class_records(keep), panels)
+    shared, degenerate, n, by_structure = tally(class_records(keep), panels)
     out = {
         "population": "class conflicts counted in S2A: filed under FastRNA's class with "
                       "a complete DSSR class, and voted from DSSR's side as in "
@@ -122,6 +101,8 @@ def main():
         "referees": list(REFEREES),
         "per_annotator": {f"class_disagreement|{t}|{k}": v
                           for t, d in shared.items() for k, v in d.items()},
+        "per_structure_fields": ["covered", "votes_parse", "votes_dssr"],
+        "per_structure": by_structure,
         "provenance": "same July differences inventory and referee files as "
                       "annotator_consensus.json; vote logic from "
                       "adjudicate_consensus.py (see module docstring)",

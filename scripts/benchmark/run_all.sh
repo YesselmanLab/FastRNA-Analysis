@@ -13,5 +13,12 @@ if [[ "${1:-}" == "--pilot" ]]; then
     --output "$analysis_root/data/benchmark/runtime_direct_pilot" \
     --pdbs 1A9N,1DUQ,1FFZ,1KQS --runs 3 --workers 4 --resume "$@"
 fi
+if [[ "${1:-}" == "--clarna" ]]; then
+  shift
+  "$benchmark_python" "$benchmark_dir/clarna_input.py"
+  exec "$benchmark_python" "$benchmark_dir/benchmark_direct.py" \
+    --output "$analysis_root/data/benchmark/runtime_direct_clarna" \
+    --tools parse,clarna --workers 4 --skip-after-timeout --resume "$@"
+fi
 exec "$benchmark_python" "$benchmark_dir/benchmark_direct.py" \
   --output "$analysis_root/data/benchmark/runtime_direct_all" --workers 4 --resume "$@"

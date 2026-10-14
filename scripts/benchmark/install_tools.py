@@ -1,4 +1,4 @@
-"""Install pinned RNA annotators locally; requires Python 3.12 and native compilers."""
+"""Install pinned RNA annotators locally."""
 import argparse
 import json
 import os
@@ -14,6 +14,41 @@ REPOS = {
     "bpnet": ("https://github.com/computational-biology/bpnet.git", "master", "6fd9ebcf8765b004913629ff27aa90143affc428"),
     "fr3d-python": ("https://github.com/BGSU-RNA/fr3d-python.git", "latest", "3e6f92a739ccda126a44969f082dbf6c0eb3ad9f"),
 }
+
+
+CLARNA_ZIP = ("https://genesilico.pl/clarna/supp-data/ClaRNA_download.zip",
+              "8056fd452bd30e885d57a6eb4194649a8013c8bbca73fcd3bf7f886ce97d771f")
+CLARNA_PACKAGES = ["python=2.7.15", "numpy=1.16.5", "scipy=1.2.1", "biopython=1.76",
+                   "simplejson", "progressbar"]
+CLARNA_PIP = ["networkx==1.8.1"]
+
+
+def install_clarna(dest, env):
+    import hashlib
+    import platform
+    import urllib.request
+    import zipfile
+    conda = locate(["conda", "mamba"], "conda (ClaRNA needs a Python 2.7 environment)")
+    archive = dest / "src/ClaRNA_download.zip"
+    if not archive.exists():
+        urllib.request.urlretrieve(CLARNA_ZIP[0], archive)
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != CLARNA_ZIP[1]:
+        raise RuntimeError(f"ClaRNA archive checksum mismatch: {archive}")
+    source = dest / "src/ClaRNA"
+    if not source.exists():
+        with zipfile.ZipFile(archive) as z:
+            z.extractall(source)
+        for compiled in source.glob("*.pyc"):
+            compiled.unlink()
+    prefix = dest / "clarna-env"
+    if not (prefix / "bin/python").exists():
+        conda_env = dict(env)
+        if platform.system() == "Darwin" and platform.machine() == "arm64":
+            conda_env["CONDA_SUBDIR"] = "osx-64"
+        run([conda, "create", "-y", "-p", prefix, "-c", "conda-forge", *CLARNA_PACKAGES], env=conda_env)
+        run([prefix / "bin/python", "-m", "pip", "install", *CLARNA_PIP], env=env)
+    return {"clarna_python": str(prefix / "bin/python"), "clarna": str(source / "clarna.py"),
+            "clarna_source": {"url": CLARNA_ZIP[0], "sha256": CLARNA_ZIP[1]}}
 
 
 def run(command, cwd=None, log=None, env=None):
@@ -36,7 +71,6 @@ def locate(names, description):
 
 
 def compiler(prefix):
-    # Apple clang cannot compile this BPNET release's unqualified stack type.
     names = [f"{prefix}-{n}" for n in range(16, 10, -1)] + [prefix]
     for name in names:
         found = shutil.which(name)
@@ -60,6 +94,10 @@ def check(config, env):
          "assert hasattr(numpy, 'chararray'), 'barnaba needs the pinned NumPy release'"], env=env)
     run([config["python"], "-c",
          "import pulp; assert pulp.LpSolverDefault is not None, 'RNApolis CLI requires the pinned CBC solver'"], env=env)
+    if config.get("clarna"):
+        run([config["clarna_python"], "-c",
+             "import Bio, numpy, scipy, simplejson; from networkx.readwrite import json_graph; "
+             "assert hasattr(json_graph, 'dump'), 'ClaRNA --save-graph needs networkx 1.8.1'"], env=env)
     print("Installation checks passed. Use run_all.sh --pilot to test actual annotations.")
 
 
@@ -127,6 +165,7 @@ def main():
     config = {"python": str(vpython), "parse": str(build / "parse"), "dssr": dssr,
               "rnaview_home": str(rv), "rnaview": str(rv / "bin/rnaview"),
               "bpnet": str(bp / "bpnet"), "bpnet_sysfiles": str(bp.parent / "sysfiles"),
+              **install_clarna(dest, env),
               "packages": {r["name"]: r["version"] for r in packages},
               "git_commits": {name: values[2] for name, values in REPOS.items()},
               "compilers": {name: subprocess.check_output([exe, "--version"], text=True).splitlines()[0]

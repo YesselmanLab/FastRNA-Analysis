@@ -1,16 +1,4 @@
-"""How many of the five referees report the pairs FastRNA rejects, split by reason.
-
-annotator_consensus.json tallies referee support for every rejection pooled
-(``parse_rejections_n_annotators_reporting``, 80,116 records). Supplementary Figure
-S2A shows only one rejection reason -- the pair failed candidate generation
-(``not_candidate``) -- and leaves the selection-stage reasons (no strong H-bond, not
-selected, stacking) out, so S2's referee panel needs the same split. This script
-tallies each reason separately, with the referee panel and lookup that
-adjudicate_consensus.py uses, and refuses to write unless the reasons summed back
-together reproduce the published pooled tally exactly.
-
-Writes data/validation/rejection_referee_support.json.
-"""
+"""How many of the five referees report the pairs FastRNA rejects, split by reason."""
 import json
 import sys
 from collections import Counter, defaultdict
@@ -27,7 +15,7 @@ OUT = ROOT / "data" / "validation" / "rejection_referee_support.json"
 def main():
     panels = {"fr3d": annotators.fr3d_pairs(),
               **ac.load_available(list(ac.VOTING_TOOLS))}
-    by_reason = defaultdict(Counter)          # reason -> (panel_size, n_reporting)
+    by_reason = defaultdict(Counter)
     for r in annotators.disagreement_records():
         if r.bucket != "rejected_by_parse":
             continue

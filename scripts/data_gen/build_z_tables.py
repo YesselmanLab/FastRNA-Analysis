@@ -1,29 +1,10 @@
-"""Build weighted Z' tables (median + 1st/9th deciles) from the GOOD reference.
-
-Generates z_tables.json with per-parameter Z' statistics (M, sl, su) used by
-the Cerny severity function for continuous parameter scoring.
-
-Structure mirrors prosco_distributions.json:
-{
-  "pairs": { "shear": { "G-C/cWW": {M, sl, su, n}, "_ANY/cWW": ..., "_ANY/_ANY": ... }, ... },
-  "hbonds": { "distance": { ... }, ... }
-}
-
-M = weighted median
-sl = sigma_lower = (M - D1) / 1.2816  (D1 = 10th percentile)
-su = sigma_upper = (D9 - M) / 1.2816  (D9 = 90th percentile)
-
-This is the first step in building a new RNA quality scorer. Run this to
-generate fresh Z' tables from data/reference/high_quality_features/ before running
-calculate_penalty_weights.py.
-"""
+"""Build weighted Z' tables (median + 1st/9th deciles) from the GOOD reference."""
 import json
 import sys
 import numpy as np
 import pandas as pd
 from pathlib import Path
 
-# Repository and paths
 REPO = Path(__file__).resolve().parent.parent.parent
 from _vendor.hbond_distance_policy import (  # noqa: E402
     select_distance_rows, base_base_rows,
@@ -31,7 +12,7 @@ from _vendor.hbond_distance_policy import (  # noqa: E402
 REF = REPO / "data" / "reference"
 OUT = REF / "scoring_tables" / "z_tables.json"
 
-PHI_INV_09 = 1.2815515655446004  # Phi^-1(0.9) - same scaling as Cerny
+PHI_INV_09 = 1.2815515655446004
 
 PAIR_PARAMS = ["shear", "stretch", "stagger", "buckle", "propeller", "opening"]
 HB_PARAMS = ["distance", "donor_angle", "acceptor_angle"]
@@ -40,13 +21,11 @@ SIGN_FLIP = {"shear", "stagger", "buckle"}
 
 
 def per_pdb_weights(pdb_ids: pd.Series) -> np.ndarray:
-    """Per-PDB weighting: each structure contributes equally."""
     counts = pdb_ids.value_counts()
     return np.array([1.0 / counts[p] for p in pdb_ids])
 
 
 def weighted_quantile(values, weights, q):
-    """Compute weighted quantile q ∈ [0, 1]."""
     order = np.argsort(values)
     v, w = values[order], weights[order]
     cum = np.cumsum(w)
@@ -54,7 +33,6 @@ def weighted_quantile(values, weights, q):
 
 
 def build_cell(values: np.ndarray, weights: np.ndarray):
-    """Build Z' cell statistics from weighted values."""
     mask = ~np.isnan(values)
     v, w = values[mask], weights[mask]
     if len(v) < 10 or np.ptp(v) < 1e-9:
@@ -73,7 +51,6 @@ def build_cell(values: np.ndarray, weights: np.ndarray):
 
 
 def canon_bp(bp, lw):
-    """Canonicalize base-pair type for self-reciprocal LW classes."""
     if lw not in SELF_RECIP or "-" not in bp:
         return bp, False
     a, b = bp.split("-", 1)
@@ -81,9 +58,7 @@ def canon_bp(bp, lw):
 
 
 def build_tables(df: pd.DataFrame, params: list[str], source: str) -> dict:
-    """Build Z' tables for all parameters in df."""
     out = {p: {} for p in params}
-    # Canonicalize + sign-flip for pair params
     d = df.copy()
     if source == "pairs":
         swap = d["lw_class"].isin(SELF_RECIP) & (
@@ -121,8 +96,6 @@ def main():
     print("\nBuilding Z' tables for pair parameters...")
     pair_tables = build_tables(good_pairs, PAIR_PARAMS, "pairs")
     print("Building Z' tables for H-bond parameters...")
-    # Distance follows the WC/strong-bond policy (base-base filtered); angles
-    # use all base-base bonds, matching the runtime scorer.
     hb_tables = build_tables(select_distance_rows(good_hb), ["distance"], "hbonds")
     hb_tables.update(
         build_tables(base_base_rows(good_hb), ["donor_angle", "acceptor_angle"], "hbonds")
