@@ -82,7 +82,7 @@ def main():
         "label_order": "input_residue_order",
         "engine_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "note": "Use an engine whose dump-selection preserves residue/LW orientation. "
-                "Figure 2/S3 use selected-output fallback; "
+                "Figure 2/S2 use selected-output fallback; "
                 "unclassified candidates are not identified-and-classified pairs.",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

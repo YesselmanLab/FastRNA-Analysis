@@ -1,4 +1,4 @@
-"""Review-tier score and issue tables behind Figure 5 (data/reference/resolved_again/)."""
+"""Review-tier score and issue tables behind Figure 4 (data/reference/resolved_again/)."""
 import argparse
 import json
 import subprocess
@@ -22,7 +22,7 @@ ISSUES = ["hbond_angles", "distance", "shear", "opening", "stretch", "stagger", 
 
 def redo_points(redo):
     pts = pd.read_csv(RESOLVED / "redo_per_structure_points.csv")
-    review = redo[redo.orig_score <= CUT]
+    review = redo[redo.orig_score < CUT]
     g = review.groupby("pdb_id").agg(n_review=("orig_score", "size"),
                                      score_o=("orig_score", "mean"),
                                      score_r=("redo_score", "mean"))
@@ -71,7 +71,7 @@ def resolved_rows(engine, workers):
     for r in strict.itertuples():
         iw = index_by_chain(pairs[r.worst], str(r.cw))
         ib = index_by_chain(pairs[r.best], str(r.cb))
-        matched = [(iw[k], ib[k]) for k in iw if k in ib and iw[k][0] <= CUT]
+        matched = [(iw[k], ib[k]) for k in iw if k in ib and iw[k][0] < CUT]
         if matched:
             rows += issue_rows("resolved", r.worst, [w[1] for w, _ in matched],
                                [b[1] for _, b in matched])

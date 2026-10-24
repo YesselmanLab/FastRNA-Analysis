@@ -18,8 +18,8 @@ figures/pse/
 # PyMOL writes fetched structures into the working directory.
 *.cif
 *.zip
-# Working copy of the S7 analysis; the figure notebook is
-# notebooks/supplemental_figures/figS7.ipynb.
+# Working copy of the S5 analysis; the figure notebook is
+# notebooks/supplemental_figures/figS5.ipynb.
 notebooks/backbone_and_pucker.ipynb
 notebooks/suite_outliers.ipynb
 
